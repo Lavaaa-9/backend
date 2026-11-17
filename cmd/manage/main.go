@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"spartial.local/backend/internal/config"
+	"spartial.local/backend/internal/maintenance"
 	"spartial.local/backend/internal/modules/identity"
 	"spartial.local/backend/internal/platform"
 	"spartial.local/backend/internal/security"
@@ -36,7 +37,7 @@ func entry() error {
 		return nil
 	}
 	if len(os.Args) != 2 {
-		return fmt.Errorf("usage: manage migrate|grant-runtime|seed|audit-seal|audit-verify|new-encryption-key|bootstrap-development")
+		return fmt.Errorf("usage: manage migrate|grant-runtime|seed|audit-seal|audit-verify|new-encryption-key|rotate-keys|bootstrap-development")
 	}
 	return run(os.Args[1])
 }
@@ -72,6 +73,13 @@ func run(command string) error {
 	}
 	defer db.Close()
 	switch command {
+	case "rotate-keys":
+		result, e := maintenance.RotateKeys(ctx, db, cfg.Keys)
+		if e != nil {
+			return e
+		}
+		slog.Info("key_rotation_complete", "mfa_rows", result.MFA, "identifier_rows", result.Identifiers)
+		return nil
 	case "grant-runtime":
 		role := os.Getenv("APP_DB_ROLE")
 		password := os.Getenv("APP_DB_PASSWORD")

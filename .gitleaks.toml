@@ -1,0 +1,6 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public offline password dictionary and license, not credentials"
+paths = ['''^internal/security/passwords/''']

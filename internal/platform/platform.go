@@ -91,7 +91,7 @@ func AuditReason(ctx context.Context, tx pgx.Tx, actor, action, resource, patien
 	return err
 }
 
-const SchemaVersion = 3
+const SchemaVersion = 6
 
 func CheckSchema(ctx context.Context, db *pgxpool.Pool) error {
 	var version int
@@ -102,7 +102,7 @@ func CheckSchema(ctx context.Context, db *pgxpool.Pool) error {
 }
 func CheckRuntimeRole(ctx context.Context, db *pgxpool.Pool) error {
 	var unsafe bool
-	e := db.QueryRow(ctx, `SELECT rolsuper OR rolcreaterole OR rolcreatedb OR has_table_privilege(current_user,'audit_events','UPDATE,DELETE,TRUNCATE') OR has_table_privilege(current_user,'audit_seals','INSERT,UPDATE,DELETE,TRUNCATE') FROM pg_roles WHERE rolname=current_user`).Scan(&unsafe)
+	e := db.QueryRow(ctx, `SELECT rolsuper OR rolreplication OR rolbypassrls OR rolcreaterole OR rolcreatedb OR has_schema_privilege(current_user,'public','CREATE') OR EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('patients','audit_events','audit_seals') AND pg_has_role(current_user,c.relowner,'MEMBER')) OR has_table_privilege(current_user,'audit_events','UPDATE,DELETE,TRUNCATE') OR has_table_privilege(current_user,'audit_seals','INSERT,UPDATE,DELETE,TRUNCATE') FROM pg_roles WHERE rolname=current_user`).Scan(&unsafe)
 	if e != nil {
 		return e
 	}
@@ -110,4 +110,13 @@ func CheckRuntimeRole(ctx context.Context, db *pgxpool.Pool) error {
 		return fmt.Errorf("API requires a restricted runtime database role; run manage grant-runtime and use DATABASE_URL")
 	}
 	return nil
+}
+
+// AuditPatientReads batches attributable hits; no patient bodies enter the audit rows.
+func AuditPatientReads(ctx context.Context, tx pgx.Tx, actor, action string, patients []string, request string) error {
+	if len(patients) == 0 {
+		return nil
+	}
+	_, e := tx.Exec(ctx, `INSERT INTO audit_events(actor_id,action,resource_id,patient_id,request_id,outcome) SELECT $1::uuid,$2,id,id,$4::uuid,'success' FROM unnest($3::uuid[]) AS p(id)`, actor, action, patients, request)
+	return e
 }

@@ -1,6 +1,6 @@
 # Security phase 1: MFA, encrypted secrets and audit seals
 
-The supplied `spartial-security-phase1.patch` is integrated with additional fixes for management rate limits, session revalidation, recovery regeneration and audit commit-order safety. Migration 00003 raises SchemaVersion to 3. The implemented contract contains 25 operations. This phase is internally tested; it does not establish regulatory compliance or complete M01/M05.
+The supplied `spartial-security-phase1.patch` is integrated with additional fixes for management rate limits, session revalidation, recovery regeneration and audit commit-order safety. Migration 00003 introduced the original controls; the engineering extension now runs through schema 6 with 40 operations. See SECURITY_ENGINEERING.md for later care/approval/transport/identifier controls. This phase is internally tested; it does not establish regulatory compliance or complete M01/M05.
 
 ## Local setup and migration
 
@@ -10,7 +10,7 @@ The supplied `spartial-security-phase1.patch` is integrated with additional fixe
 
 Production configuration requires an encryption keyring and forces `MFA_ENFORCE_PRIVILEGED=true`. Development defaults to false so synthetic receptionist/admin provisioning still works. A configured but missing old key fails TOTP verification with 503; it never bypasses MFA. Recovery codes can still be used as their independent factor. No real patient columns are claimed encrypted by this patch.
 
-Retain old keys until a tested re-encryption job and recovery rehearsal prove they are no longer needed. That job is still pending. Back up key IDs/material separately under a governed secrets process; a database dump alone cannot recover encrypted MFA secrets if keys are lost.
+Retain old keys until a tested re-encryption job and recovery rehearsal prove they are no longer needed. The owner-authorized `manage rotate-keys` command now supports both TOTP and patient identifiers, with per-row audit and a residual-old-key check. Stop old-key writers and keep all decryption keys until the documented recovery/retirement checks pass. Back up key IDs/material separately under a governed secrets process; a database dump alone cannot recover encrypted MFA secrets if keys are lost.
 
 ## Browser and mobile login
 

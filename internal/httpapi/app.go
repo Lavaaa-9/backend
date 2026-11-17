@@ -5,9 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"io"
 	"log/slog"
 	"mime"
+	"spartial.local/backend/internal/telemetry"
 	"strconv"
 	"strings"
 	"time"
@@ -54,19 +58,30 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 	if err != nil {
 		return nil, err
 	}
-	api := API{db, identity.Service{Repo: identity.Repository{DB: db}, DummyHash: dummy, Keys: cfg.Keys, Issuer: "Spartial Polyclinic"}, patients.Service{DB: db, Location: location}, facilities.Service{DB: db}, cfg, log}
-	app := fiber.New(fiber.Config{AppName: "Spartial API", BodyLimit: 64 * 1024, Immutable: true, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, StructValidator: structValidator{validator.New()}, JSONDecoder: strictJSON, ErrorHandler: api.handleError})
+	api := API{db, identity.Service{Repo: identity.Repository{DB: db}, DummyHash: dummy, Keys: cfg.Keys, Issuer: "Spartial Polyclinic"}, patients.Service{DB: db, Location: location, ClinicalAccessEnabled: cfg.CarePolicyEnabled}, facilities.Service{DB: db}, cfg, log}
+	metrics := &telemetry.Metrics{}
+	app := fiber.New(fiber.Config{AppName: "Spartial API", BodyLimit: 64 * 1024, TrustProxy: len(cfg.TrustedProxies) > 0, TrustProxyConfig: fiber.TrustProxyConfig{Proxies: cfg.TrustedProxies}, ProxyHeader: "X-Forwarded-For", EnableIPValidation: true, Immutable: true, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, StructValidator: structValidator{validator.New()}, JSONDecoder: strictJSON, ErrorHandler: api.handleError})
 	app.Use(func(c fiber.Ctx) error {
 		id := uuid.NewString()
 		c.Locals("request_id", id)
 		c.Set("X-Request-ID", id)
 		c.Set("Cache-Control", "no-store")
 		c.Set("X-Content-Type-Options", "nosniff")
+		if cfg.Env == "production" {
+			c.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		c.SetContext(ctx)
+		spanCtx, span := otel.Tracer("spartial.http").Start(ctx, "http.request")
+		defer span.End()
+		c.SetContext(spanCtx)
 		start := time.Now()
-		err := c.Next()
+		var err error
+		if cfg.Env == "production" && c.Scheme() != "https" && c.Path() != "/health/live" && c.Path() != "/health/ready" {
+			err = platform.Fail(426, "https_required", "HTTPS is required")
+		} else {
+			err = c.Next()
+		}
 		status := c.Response().StatusCode()
 		if err != nil {
 			status = 500
@@ -79,7 +94,14 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 				status = f.Code
 			}
 		}
-		log.Info("http_request", "request_id", id, "method", c.Method(), "route", c.Route().Path, "status", status, "duration_ms", time.Since(start).Milliseconds())
+		route := c.Route().Path
+		span.SetName(telemetry.SafeMethod(c.Method()) + " " + route)
+		span.SetAttributes(attribute.String("http.request.method", telemetry.SafeMethod(c.Method())), attribute.String("http.route", route), attribute.Int("http.response.status_code", status))
+		if status >= 500 {
+			span.SetStatus(codes.Error, "request_failed")
+		}
+		metrics.Observe(c.Method(), route, status, time.Since(start))
+		log.Info("http_request", "request_id", id, "method", telemetry.SafeMethod(c.Method()), "route", c.Route().Path, "status", status, "duration_ms", time.Since(start).Milliseconds())
 		return err
 	})
 	app.Use(recover.New())
@@ -323,6 +345,13 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		return c.JSON(p)
 	})
 	staff.Get("/audit", api.require("audit.read"), api.audit)
+	api.registerPrivacy(staff)
+	api.registerApprovals(staff)
+	api.registerIdentifiers(staff)
+	staff.Get("/metrics", api.require("metrics.read"), func(c fiber.Ctx) error {
+		c.Set("Content-Type", "text/plain; version=0.0.4")
+		return c.SendString(metrics.Prometheus())
+	})
 	return app, nil
 }
 func strictJSON(data []byte, v any) error {
@@ -405,7 +434,8 @@ func (api API) require(permission string) fiber.Handler {
 			return platform.Forbidden()
 		}
 		// Enforce assurance on staff permission routes; authentication/MFA bootstrap stays available.
-		if api.Config.MFAEnforcePrivileged && a.Privileged && !a.MFAVerified {
+		remoteClinical := api.Config.MFAEnforceRemoteClinical && (a.Role == "doctor" || a.Role == "laboratory" || a.Role == "pharmacy") && !api.Config.IsClinicIP(c.IP())
+		if ((api.Config.MFAEnforcePrivileged && a.Privileged) || remoteClinical) && !a.MFAVerified {
 			if e := api.deny(c, a, "mfa_required"); e != nil {
 				return e
 			}

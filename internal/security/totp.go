@@ -38,6 +38,9 @@ func TOTPStep(t time.Time) int64 { return t.Unix() / TOTPPeriod }
 
 // HOTP computes RFC 4226 for a counter with the requested number of digits.
 func HOTP(secret []byte, counter int64, digits int) string {
+	if counter < 0 || digits < 1 || digits > 8 {
+		return ""
+	}
 	var msg [8]byte
 	binary.BigEndian.PutUint64(msg[:], uint64(counter))
 	m := hmac.New(sha1.New, secret)

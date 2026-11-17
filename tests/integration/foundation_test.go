@@ -94,6 +94,9 @@ func setupWith(t *testing.T, cfg config.Config) *fixture {
 		t.Fatal(e)
 	}
 	t.Cleanup(runtime.Close)
+	if e = platform.CheckRuntimeRole(ctx, runtime); e != nil {
+		t.Fatal(e)
+	}
 	facility, e := identity.Seed(ctx, owner, password, password)
 	if e != nil {
 		t.Fatal(e)
@@ -525,8 +528,11 @@ func TestConcurrentAdministratorProtection(t *testing.T) {
 		t.Fatal(e)
 	}
 	service := identity.Service{Repo: repo}
-	second, e := service.CreateStaff(ctx, a, identity.StaffInput{Email: "admin2@spartial.test", DisplayName: "Admin2", Password: password, Role: "administrator", FacilityIDs: []string{f.facility}}, uuid.NewString())
+	second, e := service.CreateStaff(ctx, a, identity.StaffInput{Email: "admin2@spartial.test", DisplayName: "Admin2", Password: password, Role: "reception", FacilityIDs: []string{f.facility}}, uuid.NewString())
 	if e != nil {
+		t.Fatal(e)
+	}
+	if _, e = f.owner.Exec(ctx, `UPDATE staff SET role_name='administrator' WHERE id=$1::uuid`, second.ID); e != nil {
 		t.Fatal(e)
 	}
 	bLogin := f.login(t, "admin2@spartial.test")

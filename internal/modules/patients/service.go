@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"spartial.local/backend/internal/modules/identity"
+	"spartial.local/backend/internal/modules/privacy"
 	"spartial.local/backend/internal/platform"
 	"spartial.local/backend/internal/security"
 	"strings"
@@ -40,8 +41,9 @@ type Patient struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 type Service struct {
-	DB       *pgxpool.Pool
-	Location *time.Location
+	DB                    *pgxpool.Pool
+	Location              *time.Location
+	ClinicalAccessEnabled bool
 }
 
 func clean(d *Demographics, now time.Time) error {
@@ -95,7 +97,7 @@ func (s Service) Create(ctx context.Context, a identity.Actor, in Input, key, re
 		return Patient{}, e
 	}
 	hash := security.Digest(string(body))
-	tx, e := s.DB.Begin(ctx)
+	tx, e := platform.BeginActor(ctx, s.DB, a.ID, s.ClinicalAccessEnabled)
 	if e != nil {
 		return Patient{}, e
 	}
@@ -143,11 +145,15 @@ func (s Service) Get(ctx context.Context, a identity.Actor, id, request string) 
 	if !a.Can("patients.read") {
 		return Patient{}, platform.Forbidden()
 	}
-	tx, e := s.DB.Begin(ctx)
+	tx, e := platform.BeginActor(ctx, s.DB, a.ID, s.ClinicalAccessEnabled)
 	if e != nil {
 		return Patient{}, e
 	}
 	defer tx.Rollback(ctx)
+	ctx = privacy.WithRequest(ctx, request)
+	if e = (privacy.Policy{DB: s.DB, Enabled: s.ClinicalAccessEnabled}).CanAccessPatient(ctx, tx, a, id, false); e != nil {
+		return Patient{}, e
+	}
 	p, e := (repository{tx}).get(ctx, id, a.FacilityIDs)
 	if e != nil {
 		return Patient{}, e
@@ -170,13 +176,20 @@ func (s Service) List(ctx context.Context, a identity.Actor, q, after, request s
 	if q != "" {
 		q = "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q) + "%"
 	}
-	tx, e := s.DB.Begin(ctx)
+	tx, e := platform.BeginActor(ctx, s.DB, a.ID, s.ClinicalAccessEnabled)
 	if e != nil {
 		return nil, e
 	}
 	defer tx.Rollback(ctx)
 	out, e := (repository{tx}).list(ctx, a.FacilityIDs, q, after, limit)
 	if e != nil {
+		return nil, e
+	}
+	ids := make([]string, 0, len(out))
+	for _, p := range out {
+		ids = append(ids, p.ID)
+	}
+	if e = platform.AuditPatientReads(ctx, tx, a.ID, "patients.search_hit", ids, request); e != nil {
 		return nil, e
 	}
 	if e = platform.Audit(ctx, tx, a.ID, "patients.search", "", "", request, "success"); e != nil {
@@ -194,12 +207,16 @@ func (s Service) Update(ctx context.Context, a identity.Actor, id string, in Upd
 	if e := clean(&in.Demographics, s.now()); e != nil {
 		return Patient{}, e
 	}
-	tx, e := s.DB.Begin(ctx)
+	tx, e := platform.BeginActor(ctx, s.DB, a.ID, s.ClinicalAccessEnabled)
 	if e != nil {
 		return Patient{}, e
 	}
 	defer tx.Rollback(ctx)
 	r := repository{tx}
+	ctx = privacy.WithRequest(ctx, request)
+	if e = (privacy.Policy{DB: s.DB, Enabled: s.ClinicalAccessEnabled}).CanAccessPatient(ctx, tx, a, id, true); e != nil {
+		return Patient{}, e
+	}
 	// Check visibility before distinguishing stale versions from absent records.
 	if _, e = r.get(ctx, id, a.FacilityIDs); e != nil {
 		return Patient{}, e

@@ -1,0 +1,16 @@
+# Inactive template; hosting, region, credentials, retention and recovery targets remain undecided.
+# Install the reviewed version of pgBackRest on the approved backup host first.
+# Inject PGBACKREST_REPO1_CIPHER_PASS and provider credentials through protected secret delivery.
+[global]
+repo1-type=s3
+repo1-path=/spartial
+repo1-s3-bucket=REPLACE_APPROVED_PRIVATE_BUCKET
+repo1-s3-endpoint=REPLACE_APPROVED_STORAGE_ENDPOINT
+repo1-s3-region=REPLACE_APPROVED_REGION
+repo1-cipher-type=aes-256-cbc
+repo1-storage-verify-tls=y
+start-fast=y
+archive-async=y
+[spartial]
+pg1-path=REPLACE_DATABASE_DATA_DIRECTORY
+pg1-port=5432

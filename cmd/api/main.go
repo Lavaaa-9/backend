@@ -9,6 +9,7 @@ import (
 	"spartial.local/backend/internal/config"
 	"spartial.local/backend/internal/httpapi"
 	"spartial.local/backend/internal/platform"
+	"spartial.local/backend/internal/telemetry"
 	"syscall"
 	"time"
 )
@@ -39,6 +40,15 @@ func run() error {
 	if e = platform.CheckRuntimeRole(ctx, db); e != nil {
 		return e
 	}
+	shutdownTracing, e := telemetry.Setup(ctx, cfg.TelemetryEndpoint)
+	if e != nil {
+		return e
+	}
+	defer func() {
+		flush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = shutdownTracing(flush)
+	}()
 	app, e := httpapi.New(cfg, db, log)
 	if e != nil {
 		return e

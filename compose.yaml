@@ -5,13 +5,22 @@ x-environment: &environment
   DATABASE_URL: postgres://spartial_app:${APP_DB_PASSWORD:?run scripts/dev-db.sh or create .env}@postgres:5432/spartial?sslmode=disable
   ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
   CLINIC_TIMEZONE: Africa/Dar_es_Salaam
+  CARE_POLICY_ENABLED: ${CARE_POLICY_ENABLED:-true}
+  CARE_POLICY_APPROVAL_REF: ${CARE_POLICY_APPROVAL_REF:-}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
+  CLINIC_NETWORKS: ${CLINIC_NETWORKS:-}
+  MFA_ENFORCE_REMOTE_CLINICAL: ${MFA_ENFORCE_REMOTE_CLINICAL:-false}
+  IDENTIFIER_INDEX_KEY: ${IDENTIFIER_INDEX_KEY:-}
+  OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+  PRIVACY_READ_THRESHOLD: ${PRIVACY_READ_THRESHOLD:-0}
+  PRIVACY_MFA_THRESHOLD: ${PRIVACY_MFA_THRESHOLD:-0}
   # Optional in development: without keys, MFA enrollment answers 503 mfa_unavailable.
   PHI_ENCRYPTION_KEYS: ${PHI_ENCRYPTION_KEYS:-}
   PHI_ACTIVE_KEY_ID: ${PHI_ACTIVE_KEY_ID:-}
   MFA_ENFORCE_PRIVILEGED: ${MFA_ENFORCE_PRIVILEGED:-false}
 services:
   postgres:
-    image: docker.io/library/postgres:18.3-alpine3.23
+    image: docker.io/library/postgres:18.7-alpine3.23@sha256:60aac580d8dbe3093c097bb1d11f9e62999814d3a1da2c1aaf729c0b7db117f2
     environment:
       POSTGRES_DB: spartial
       POSTGRES_USER: spartial_owner

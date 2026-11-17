@@ -7,7 +7,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18.3-alpine3.23
+        image: postgres:18.7-alpine3.23@sha256:60aac580d8dbe3093c097bb1d11f9e62999814d3a1da2c1aaf729c0b7db117f2
         env:
           POSTGRES_PASSWORD: synthetic-ci-only-password
         ports: ["5432:5432"]
@@ -23,6 +23,10 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: test -z "$(gofmt -l cmd internal db api tests)"
+      - name: Verify benchmark report privacy
+        run: |
+          python3 scripts/install-security-tools.py deploy/performance-tools.json
+          .local/tools/k6 run --quiet tests/performance/report_privacy.js
       - run: go vet ./...
       - run: go test -race -count=1 ./...
       - run: go build ./cmd/...

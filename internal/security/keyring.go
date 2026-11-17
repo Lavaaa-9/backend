@@ -64,7 +64,11 @@ func (k *Keyring) Seal(plaintext, aad []byte) ([]byte, error) {
 		return nil, e
 	}
 	out := make([]byte, 0, 2+len(k.active)+len(nonce)+len(plaintext)+aead.Overhead())
-	out = append(out, 1, byte(len(k.active)))
+	n := len(k.active)
+	if n < 1 || n > 32 {
+		return nil, errors.New("invalid encryption key id")
+	}
+	out = append(out, 1, byte(n))
 	out = append(out, k.active...)
 	out = append(out, nonce...)
 	return aead.Seal(out, nonce, plaintext, aad), nil
@@ -104,4 +108,16 @@ func NewKeyMaterial() (string, error) {
 		return "", e
 	}
 	return base64.StdEncoding.EncodeToString(b), nil
+}
+
+// CiphertextKeyID returns only non-secret envelope metadata, or empty for a malformed header.
+func CiphertextKeyID(blob []byte) string {
+	if len(blob) < 2 || blob[0] != 1 {
+		return ""
+	}
+	n := int(blob[1])
+	if n == 0 || len(blob) < 2+n {
+		return ""
+	}
+	return string(blob[2 : 2+n])
 }

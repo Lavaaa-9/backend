@@ -51,12 +51,12 @@ func (s Service) keys() (*security.Keyring, error) {
 }
 
 // issueChallenge is called inside Login's transaction after the password was verified.
-func issueChallenge(ctx context.Context, tx pgx.Tx, u User, client, request string) (Challenge, error) {
+func issueChallenge(ctx context.Context, tx pgx.Tx, u User, client, request, label string) (Challenge, error) {
 	token, e := security.Token()
 	if e != nil {
 		return Challenge{}, e
 	}
-	id, e := insertChallenge(ctx, tx, security.Digest(token), u.ID, u.Version, client, challengeTTL)
+	id, e := insertChallenge(ctx, tx, security.Digest(token), u.ID, u.Version, client, challengeTTL, label)
 	if e != nil {
 		return Challenge{}, e
 	}
@@ -139,7 +139,7 @@ func (s Service) VerifyMFA(ctx context.Context, in MFAVerify, ip, request string
 	if e = consumeChallenge(ctx, tx, challenge.ID); e != nil {
 		return Tokens{}, e
 	}
-	t, e := s.openSession(ctx, tx, u, in.ClientType, true, request, method)
+	t, e := s.openSession(ctx, tx, u, in.ClientType, true, request, method, challenge.DeviceLabel)
 	if e != nil {
 		return Tokens{}, e
 	}

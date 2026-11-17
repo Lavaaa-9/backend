@@ -20,9 +20,10 @@ type Service struct {
 	Now func() time.Time
 }
 type Credentials struct {
-	Email      string `json:"email" validate:"required,email,max=254"`
-	Password   string `json:"password" validate:"required,max=256"`
-	ClientType string `json:"client_type" validate:"required,oneof=web mobile"`
+	DeviceLabel string `json:"device_label" validate:"max=80"`
+	Email       string `json:"email" validate:"required,email,max=254"`
+	Password    string `json:"password" validate:"required,max=256"`
+	ClientType  string `json:"client_type" validate:"required,oneof=web mobile"`
 }
 type Tokens struct {
 	AccessToken  string `json:"access_token"`
@@ -90,13 +91,13 @@ func (s Service) Login(ctx context.Context, in Credentials, ip, request string) 
 		return Tokens{}, nil, e
 	}
 	if enrolled {
-		c, e := issueChallenge(ctx, tx, current, in.ClientType, request)
+		c, e := issueChallenge(ctx, tx, current, in.ClientType, request, in.DeviceLabel)
 		if e != nil {
 			return Tokens{}, nil, e
 		}
 		return Tokens{}, &c, tx.Commit(ctx)
 	}
-	t, e := s.openSession(ctx, tx, current, in.ClientType, false, request, "")
+	t, e := s.openSession(ctx, tx, current, in.ClientType, false, request, "", in.DeviceLabel)
 	if e != nil {
 		return Tokens{}, nil, e
 	}
@@ -104,7 +105,7 @@ func (s Service) Login(ctx context.Context, in Credentials, ip, request string) 
 }
 
 // openSession creates a session inside the caller's transaction (staff row already locked).
-func (s Service) openSession(ctx context.Context, tx pgx.Tx, u User, client string, mfa bool, request, method string) (Tokens, error) {
+func (s Service) openSession(ctx context.Context, tx pgx.Tx, u User, client string, mfa bool, request, method, label string) (Tokens, error) {
 	access, e := security.Token()
 	if e != nil {
 		return Tokens{}, e
@@ -113,7 +114,7 @@ func (s Service) openSession(ctx context.Context, tx pgx.Tx, u User, client stri
 	if e != nil {
 		return Tokens{}, e
 	}
-	sid, e := createSession(ctx, tx, u.ID, client, security.Digest(access), security.Digest(refresh), mfa)
+	sid, e := createSession(ctx, tx, u.ID, client, security.Digest(access), security.Digest(refresh), mfa, label)
 	if e != nil {
 		return Tokens{}, e
 	}
@@ -159,7 +160,7 @@ func (s Service) Refresh(ctx context.Context, token, client, request string) (To
 	if e != nil {
 		return Tokens{}, e
 	}
-	revoked, expires, e := lockSession(ctx, tx, sid)
+	revoked, expires, idleExpired, e := lockSession(ctx, tx, sid)
 	if e != nil {
 		return Tokens{}, e
 	}
@@ -179,7 +180,7 @@ func (s Service) Refresh(ctx context.Context, token, client, request string) (To
 		}
 		return Tokens{}, platform.Unauthorized()
 	}
-	if !u.Active || revoked != nil || !expires.After(time.Now()) {
+	if !u.Active || revoked != nil || idleExpired || !expires.After(time.Now()) {
 		return Tokens{}, platform.Unauthorized()
 	}
 	access, e := security.Token()
@@ -229,10 +230,16 @@ func (s Service) CreateStaff(ctx context.Context, a Actor, in StaffInput, reques
 	if a.Role != "administrator" || !a.Can("staff.manage") {
 		return User{}, platform.Forbidden()
 	}
+	if in.Role == "administrator" {
+		return User{}, platform.Fail(409, "approval_required", "Create an ordinary staff account and request an administrator-role approval")
+	}
 	in.Email = strings.ToLower(in.Email)
 	in.DisplayName = strings.TrimSpace(in.DisplayName)
 	if in.DisplayName == "" {
 		return User{}, platform.Fail(422, "validation", "Display name is required")
+	}
+	if !security.PasswordAllowed(in.Password) {
+		return User{}, platform.Fail(422, "weak_password", "Choose a longer password that is not on the common-password list")
 	}
 	hash, e := security.HashPassword(in.Password)
 	if e != nil {
@@ -290,6 +297,9 @@ func (s Service) UpdateStaff(ctx context.Context, a Actor, id string, in UpdateS
 	if e != nil {
 		return User{}, e
 	}
+	if in.Role == "administrator" && old.Role != "administrator" {
+		return User{}, platform.Fail(409, "approval_required", "Administrator-role grants require independent approval")
+	}
 	if old.Version != in.Version {
 		return User{}, platform.Conflict()
 	}
@@ -329,16 +339,32 @@ func (s Service) UpdateStaff(ctx context.Context, a Actor, id string, in UpdateS
 	return u, nil
 }
 func (s Service) ChangePassword(ctx context.Context, a Actor, old, password, request string) error {
+	if !security.PasswordAllowed(password) {
+		return platform.Fail(422, "weak_password", "Choose a longer password that is not on the common-password list")
+	}
+	ok, e := s.Repo.Limit(ctx, "password-change:"+a.ID)
+	if e != nil {
+		return e
+	}
+	if !ok {
+		return platform.Fail(429, "rate_limited", "Too many password-change attempts; retry after 15 minutes")
+	}
 	tx, e := s.Repo.DB.Begin(ctx)
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback(ctx)
-	_, hash, e := userBy(ctx, tx, "s.id=$1::uuid FOR UPDATE", a.ID)
+	_, hash, e := lockMFAActor(ctx, tx, a)
 	if e != nil {
 		return e
 	}
 	if !security.VerifyPassword(hash, old) {
+		if e = platform.AuditReason(ctx, tx, a.ID, "auth.password_change", a.ID, "", request, "denied", "reauthentication_failed"); e != nil {
+			return e
+		}
+		if e = tx.Commit(ctx); e != nil {
+			return e
+		}
 		return platform.Unauthorized()
 	}
 	hash, e = security.HashPassword(password)

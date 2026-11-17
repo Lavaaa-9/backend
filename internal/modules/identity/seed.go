@@ -12,7 +12,7 @@ import (
 
 // Seed is for synthetic development databases only. Existing accounts are never reset.
 func Seed(ctx context.Context, db *pgxpool.Pool, adminPassword, receptionPassword string) (string, error) {
-	if len(adminPassword) < 12 || len(receptionPassword) < 12 || len(adminPassword) > 256 || len(receptionPassword) > 256 {
+	if !security.PasswordAllowed(adminPassword) || !security.PasswordAllowed(receptionPassword) {
 		return "", errors.New("both seed passwords must contain 12–256 characters")
 	}
 	ah, e := security.HashPassword(adminPassword)

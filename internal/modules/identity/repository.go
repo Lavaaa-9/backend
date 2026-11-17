@@ -52,11 +52,11 @@ func (r Repository) ByEmail(ctx context.Context, email string) (User, string, er
 }
 func (r Repository) Actor(ctx context.Context, token string) (Actor, error) {
 	var a Actor
-	err := r.DB.QueryRow(ctx, `SELECT u.id::text,u.email,u.display_name,u.role_name,u.active,u.version,s.id::text,s.client_type,
+	err := r.DB.QueryRow(ctx, `UPDATE sessions s SET last_seen_at=now() FROM staff u WHERE u.id=s.staff_id AND s.access_hash=$1 AND u.active AND s.revoked_at IS NULL AND s.access_expires_at>now() AND s.expires_at>now() AND (s.client_type<>'web' OR s.last_seen_at>now()-interval '15 minutes') RETURNING u.id::text,u.email,u.display_name,u.role_name,u.active,u.version,s.id::text,s.client_type,
  COALESCE((SELECT array_agg(sf.facility_id::text ORDER BY sf.facility_id) FROM staff_facilities sf JOIN facilities f ON f.id=sf.facility_id AND f.active WHERE sf.staff_id=u.id),'{}'),
  COALESCE((SELECT array_agg(permission_name ORDER BY permission_name) FROM role_permissions WHERE role_name=u.role_name),'{}'),
  s.mfa_verified,(SELECT privileged FROM roles WHERE name=u.role_name)
- FROM sessions s JOIN staff u ON u.id=s.staff_id WHERE s.access_hash=$1 AND u.active AND s.revoked_at IS NULL AND s.access_expires_at>now() AND s.expires_at>now()`, security.Digest(token)).Scan(&a.ID, &a.Email, &a.DisplayName, &a.Role, &a.Active, &a.Version, &a.SessionID, &a.ClientType, &a.FacilityIDs, &a.Permissions, &a.MFAVerified, &a.Privileged)
+ `, security.Digest(token)).Scan(&a.ID, &a.Email, &a.DisplayName, &a.Role, &a.Active, &a.Version, &a.SessionID, &a.ClientType, &a.FacilityIDs, &a.Permissions, &a.MFAVerified, &a.Privileged)
 	return a, err
 }
 func (r Repository) Limit(ctx context.Context, bucket string) (bool, error) {
@@ -116,15 +116,17 @@ func (r Repository) List(ctx context.Context, after string, limit int) ([]User, 
 }
 
 type Session struct {
-	ID         string     `json:"id"`
-	ClientType string     `json:"client_type"`
-	CreatedAt  time.Time  `json:"created_at"`
-	ExpiresAt  time.Time  `json:"expires_at"`
-	RevokedAt  *time.Time `json:"revoked_at"`
+	ID          string     `json:"id"`
+	ClientType  string     `json:"client_type"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	RevokedAt   *time.Time `json:"revoked_at"`
+	LastSeenAt  time.Time  `json:"last_seen_at"`
+	DeviceLabel string     `json:"device_label"`
 }
 
 func (r Repository) Sessions(ctx context.Context, id string) ([]Session, error) {
-	rows, e := r.DB.Query(ctx, `SELECT id::text,client_type,created_at,expires_at,revoked_at FROM sessions WHERE staff_id=$1::uuid ORDER BY created_at DESC LIMIT 100`, id)
+	rows, e := r.DB.Query(ctx, `SELECT id::text,client_type,created_at,expires_at,revoked_at,last_seen_at,device_label FROM sessions WHERE staff_id=$1::uuid ORDER BY created_at DESC LIMIT 100`, id)
 	if e != nil {
 		return nil, e
 	}
@@ -132,7 +134,7 @@ func (r Repository) Sessions(ctx context.Context, id string) ([]Session, error) 
 	out := []Session{}
 	for rows.Next() {
 		var s Session
-		if e = rows.Scan(&s.ID, &s.ClientType, &s.CreatedAt, &s.ExpiresAt, &s.RevokedAt); e != nil {
+		if e = rows.Scan(&s.ID, &s.ClientType, &s.CreatedAt, &s.ExpiresAt, &s.RevokedAt, &s.LastSeenAt, &s.DeviceLabel); e != nil {
 			return nil, e
 		}
 		out = append(out, s)
@@ -140,9 +142,9 @@ func (r Repository) Sessions(ctx context.Context, id string) ([]Session, error) 
 	return out, rows.Err()
 }
 
-func createSession(ctx context.Context, tx pgx.Tx, uid, client, accessHash, refreshHash string, mfa bool) (string, error) {
+func createSession(ctx context.Context, tx pgx.Tx, uid, client, accessHash, refreshHash string, mfa bool, label string) (string, error) {
 	var sid string
-	e := tx.QueryRow(ctx, `INSERT INTO sessions(staff_id,client_type,access_hash,access_expires_at,expires_at,mfa_verified) VALUES($1::uuid,$2,$3,now()+interval '15 minutes',now()+interval '7 days',$4) RETURNING id::text`, uid, client, accessHash, mfa).Scan(&sid)
+	e := tx.QueryRow(ctx, `INSERT INTO sessions(staff_id,client_type,access_hash,access_expires_at,expires_at,mfa_verified,device_label) VALUES($1::uuid,$2,$3,now()+interval '15 minutes',now()+interval '7 days',$4,$5) RETURNING id::text`, uid, client, accessHash, mfa, label).Scan(&sid)
 	if e != nil {
 		return "", e
 	}
@@ -159,8 +161,8 @@ func findRefresh(ctx context.Context, tx pgx.Tx, hash, client string) (sid, uid 
 	err = tx.QueryRow(ctx, `SELECT r.session_id::text,s.staff_id::text FROM refresh_tokens r JOIN sessions s ON s.id=r.session_id WHERE r.token_hash=$1 AND s.client_type=$2`, hash, client).Scan(&sid, &uid)
 	return
 }
-func lockSession(ctx context.Context, tx pgx.Tx, sid string) (revoked *time.Time, expires time.Time, err error) {
-	err = tx.QueryRow(ctx, `SELECT revoked_at,expires_at FROM sessions WHERE id=$1::uuid FOR UPDATE`, sid).Scan(&revoked, &expires)
+func lockSession(ctx context.Context, tx pgx.Tx, sid string) (revoked *time.Time, expires time.Time, idleExpired bool, err error) {
+	err = tx.QueryRow(ctx, `SELECT revoked_at,expires_at,(client_type='web' AND last_seen_at<=now()-interval '15 minutes') FROM sessions WHERE id=$1::uuid FOR UPDATE`, sid).Scan(&revoked, &expires, &idleExpired)
 	return
 }
 func lockRefresh(ctx context.Context, tx pgx.Tx, hash string) (used *time.Time, err error) {
@@ -180,7 +182,7 @@ func consumeRefresh(ctx context.Context, tx pgx.Tx, hash string) error {
 	return e
 }
 func rotateAccess(ctx context.Context, tx pgx.Tx, sid, hash string) error {
-	_, e := tx.Exec(ctx, `UPDATE sessions SET access_hash=$1,access_expires_at=LEAST(now()+interval '15 minutes',expires_at) WHERE id=$2::uuid`, hash, sid)
+	_, e := tx.Exec(ctx, `UPDATE sessions SET last_seen_at=now(),access_hash=$1,access_expires_at=LEAST(now()+interval '15 minutes',expires_at) WHERE id=$2::uuid`, hash, sid)
 	return e
 }
 func revokeAllSessions(ctx context.Context, tx pgx.Tx, uid string) error {

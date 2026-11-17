@@ -1,0 +1,216 @@
+{
+  "approval_requests": {
+    "id": "C3",
+    "kind": "C3",
+    "subject_id": "C3",
+    "subject_version": "C3",
+    "requested_by": "C3",
+    "reason": "C3",
+    "expires_at": "C3",
+    "created_at": "C3",
+    "status": "C3",
+    "reviewed_by": "C3",
+    "reviewed_at": "C3",
+    "review_note": "C3"
+  },
+  "audit_events": {
+    "id": "C3",
+    "actor_id": "C3",
+    "action": "C3",
+    "resource_id": "C3",
+    "patient_id": "C3",
+    "request_id": "C3",
+    "outcome": "C3",
+    "created_at": "C3",
+    "reason": "C3",
+    "facility_id": "C3"
+  },
+  "audit_seals": {
+    "id": "C1",
+    "first_event_id": "C1",
+    "last_event_id": "C1",
+    "event_count": "C1",
+    "previous_hash": "C1",
+    "chain_hash": "C1",
+    "sealed_at": "C1"
+  },
+  "auth_limits": {
+    "bucket": "C2",
+    "window_start": "C1",
+    "attempts": "C1"
+  },
+  "break_glass_access": {
+    "id": "C3",
+    "patient_id": "C3",
+    "facility_id": "C3",
+    "staff_id": "C3",
+    "reason": "C3",
+    "granted_at": "C3",
+    "expires_at": "C3",
+    "reviewed_by": "C3",
+    "reviewed_at": "C3",
+    "review_outcome": "C3",
+    "review_note": "C3"
+  },
+  "care_assignments": {
+    "id": "C3",
+    "patient_id": "C3",
+    "facility_id": "C3",
+    "staff_id": "C3",
+    "assigned_by": "C3",
+    "reason": "C3",
+    "valid_from": "C3",
+    "valid_until": "C3",
+    "revoked_at": "C3",
+    "revoked_by": "C3",
+    "created_at": "C3"
+  },
+  "development_event_sink": {
+    "event_id": "C3",
+    "event_type": "C3",
+    "observed_at": "C3"
+  },
+  "facilities": {
+    "id": "C1",
+    "name": "C1",
+    "timezone": "C1",
+    "active": "C1",
+    "created_at": "C1"
+  },
+  "goose_db_version": {
+    "id": "C1",
+    "version_id": "C1",
+    "is_applied": "C1",
+    "tstamp": "C1"
+  },
+  "idempotency_records": {
+    "actor_id": "C3",
+    "operation": "C3",
+    "key": "C3",
+    "request_hash": "C3",
+    "response": "C3",
+    "created_at": "C3"
+  },
+  "login_challenges": {
+    "id": "C1",
+    "token_hash": "C4",
+    "staff_id": "C1",
+    "staff_version": "C1",
+    "client_type": "C1",
+    "attempts": "C1",
+    "expires_at": "C1",
+    "consumed_at": "C1",
+    "created_at": "C1",
+    "device_label": "C1"
+  },
+  "mfa_recovery_codes": {
+    "code_hash": "C4",
+    "staff_id": "C1",
+    "used_at": "C1",
+    "created_at": "C1"
+  },
+  "outbox": {
+    "id": "C3",
+    "event_type": "C3",
+    "aggregate_id": "C3",
+    "created_at": "C3",
+    "available_at": "C3",
+    "lease_until": "C3",
+    "lease_token": "C3",
+    "attempts": "C3",
+    "status": "C3",
+    "last_error": "C3"
+  },
+  "patient_identifiers": {
+    "id": "C2",
+    "patient_id": "C2",
+    "facility_id": "C2",
+    "kind": "C2",
+    "issuer": "C2",
+    "value_ciphertext": "C2",
+    "blind_index": "C2",
+    "recorded_by": "C2",
+    "created_at": "C2"
+  },
+  "patient_scopes": {
+    "patient_id": "C2",
+    "facility_id": "C2"
+  },
+  "patients": {
+    "id": "C2",
+    "mrn": "C2",
+    "facility_id": "C2",
+    "given_name": "C2",
+    "family_name": "C2",
+    "birth_precision": "C2",
+    "birth_date": "C2",
+    "birth_year": "C2",
+    "phone": "C2",
+    "address": "C2",
+    "version": "C2",
+    "created_at": "C2",
+    "updated_at": "C2"
+  },
+  "permissions": {
+    "name": "C1"
+  },
+  "privacy_alerts": {
+    "id": "C3",
+    "actor_id": "C3",
+    "rule": "C3",
+    "window_start": "C3",
+    "window_end": "C3",
+    "event_count": "C3",
+    "created_at": "C3"
+  },
+  "refresh_tokens": {
+    "token_hash": "C4",
+    "session_id": "C1",
+    "used_at": "C1",
+    "created_at": "C1"
+  },
+  "role_permissions": {
+    "role_name": "C1",
+    "permission_name": "C1"
+  },
+  "roles": {
+    "name": "C1",
+    "privileged": "C1"
+  },
+  "sessions": {
+    "id": "C1",
+    "staff_id": "C1",
+    "client_type": "C1",
+    "access_hash": "C4",
+    "access_expires_at": "C1",
+    "expires_at": "C1",
+    "revoked_at": "C1",
+    "created_at": "C1",
+    "mfa_verified": "C1",
+    "last_seen_at": "C1",
+    "device_label": "C1"
+  },
+  "staff": {
+    "id": "C1",
+    "email": "C2",
+    "display_name": "C1",
+    "password_hash": "C4",
+    "role_name": "C1",
+    "active": "C1",
+    "version": "C1",
+    "created_at": "C1",
+    "updated_at": "C1"
+  },
+  "staff_facilities": {
+    "staff_id": "C1",
+    "facility_id": "C1"
+  },
+  "staff_mfa": {
+    "staff_id": "C1",
+    "secret_ciphertext": "C4",
+    "confirmed_at": "C1",
+    "last_used_step": "C1",
+    "created_at": "C1",
+    "updated_at": "C1"
+  }
+}

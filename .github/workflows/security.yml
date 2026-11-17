@@ -1,0 +1,43 @@
+name: security
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/cache@v4
+        id: security-tools
+        with:
+          path: |
+            .local/tools
+            ~/.cache/trivy
+          key: ${{ runner.os }}-spartial-security-gosec-2.30.0-${{ hashFiles('deploy/security-tools.json', 'go.mod') }}
+      - name: Install checksum-pinned security tools
+        if: steps.security-tools.outputs.cache-hit != 'true'
+        run: |
+          python3 scripts/install-security-tools.py
+          GOBIN="$PWD/.local/tools" go install github.com/securego/gosec/v2/cmd/gosec@v2.30.0
+      - name: Scan history for secrets
+        run: .local/tools/gitleaks git --redact --no-banner --config .gitleaks.toml .
+      - name: Static security analysis
+        run: .local/tools/gosec -severity high -confidence medium ./...
+      - name: Dependency vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+      - name: Build non-root image
+        run: docker build -t spartial-backend:security .
+      - name: Fail on high or critical image vulnerabilities
+        run: .local/tools/trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 spartial-backend:security
+      - name: Generate SPDX software bill of materials
+        run: .local/tools/syft docker:spartial-backend:security -o spdx-json=spartial-sbom.spdx.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spartial-sbom
+          path: spartial-sbom.spdx.json

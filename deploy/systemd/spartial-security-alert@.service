@@ -1,0 +1,5 @@
+[Unit]
+Description=Record failed Spartial security maintenance job
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/logger -p authpriv.crit -t spartial-security Audit maintenance unit %i failed; investigate database availability and seal integrity

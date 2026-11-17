@@ -58,3 +58,13 @@ Container builds are multi-stage/non-root and use version-pinned images. Rebuild
 Apply migration 00003 and rerun `manage grant-runtime` before restarting the matching API. Native development setup safely backfills a completely missing keyring; it never replaces existing keys. Keep old key IDs available until a tested re-encryption/recovery procedure permits retirement. Production enforces privileged MFA and requires keys. See SECURITY_PHASE1.md for full MFA and sealed-audit behavior.
 
 Only owner-authorized management credentials may run `manage audit-seal`; the runtime application cannot create seals. Sealing waits for existing audit writers using a short SHARE barrier, takes a contiguous age-eligible prefix, and retries on lock timeout. `manage audit-verify` reports the sealed-prefix result plus unsealed tail count. Configure scheduling and off-host anchor shipping before making database-owner tamper-detection claims; neither is deployed in this repository.
+
+## Engineering extension: schema 6
+
+Use SECURITY_ENGINEERING.md for exact configuration, privacy/approval/identifier commands and remaining deployment work. Runtime startup now rejects RLS bypass, replication/administrative privileges, public-schema creation, security-table ownership and audit mutation/seal privileges. Production requires verified PostgreSQL TLS with an explicit CA and HTTPS from a trusted proxy (private health probes remain available). Do not infer trusted client networks from untrusted headers.
+
+Native synthetic data was privately backed up before migrations 00004–00006, then migrated with grants refreshed. `restore-check.py` now verifies the original sealed prefix, restores restricted grants, proves an unscoped runtime sees no patients and performs an audited scoped synthetic patient read. It remains a dump restore, not PITR/object/key recovery. Offsite delivery, provider regions, key custody, incident ownership and actual systemd/anchor forwarding were explicitly deferred by the user; templates are inactive and not proof those controls are deployed.
+
+The current worker can run privacy monitoring under explicitly configured thresholds; zero disables a rule. It uses the development sink only in development and fails unconfigured production delivery jobs visibly. New device labels are descriptions, not trusted fingerprints or delivered emails. The frontend still needs its own human-idle lock; server request activity can include polling.
+
+Local scanner/image/SBOM evidence is in SECURITY_TASK_STATUS.md. The small synthetic k6 baseline, reproducible commands and limitations are in PERFORMANCE.md. Neither local nor hosted CI success is an independent penetration test, clinic acceptance or legal certification.

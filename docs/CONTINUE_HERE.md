@@ -2,7 +2,7 @@
 
 ## Saved state — 17 November 2026
 
-The repository began with only the implementation prompt. Milestone A now has a running, tested vertical slice: Fiber v3.7.0, PostgreSQL, staff authentication/administration, fixed roles/permissions and facility assignments, patient registry with unique MRNs/search/versioned edits, audit, durable idempotency/outbox and a separate explicit development sink worker. The API contract contains 25 implemented operations.
+The repository began with only the implementation prompt. Milestone A now has a running, tested vertical slice: Fiber v3.7.0, PostgreSQL, staff authentication/administration, fixed roles/permissions and facility assignments, patient registry with unique MRNs/search/versioned edits, audit, durable idempotency/outbox and a separate explicit development sink worker. The API contract contains 40 implemented operations.
 
 **The full backend is unfinished.** Read MODULE_STATUS.md before choosing the next task. M01/M02/M04/M05/M18/M24 are in progress; the other modules are not started. No module is clinic accepted. No production service/data has been touched or deployed. No external provider has been tested.
 
@@ -67,9 +67,19 @@ Current verification evidence:
 
 See SECURITY_PHASE1.md for frontend enrollment/challenge/recovery instructions and operational limits. Existing unrelated .vscode settings were preserved.
 
+## Latest engineering-spec implementation — schema 6
+
+The supplied Phase 1 Security & Compliance Engineering Spec is saved in PHASE1_ENGINEERING_SPEC.md. The user authorized continuing implementation and explicitly deferred hosting/offsite/mail decisions to documentation. Exact T01–T29 status is SECURITY_TASK_STATUS.md; production/clinic/vendor decisions are DEPLOYMENT_DECISIONS.md. The care policy ADR is proposed, not a fabricated clinic signature.
+
+Implemented since b99765d: care assignments/revocation, audited denied clinical access, four-hour exceptional grants and independent review, patient/identifier FORCE RLS with transaction-local actor, administrator-role/MFA-reset independent approvals, idle expiry/device labels, production DB/API TLS and proxy/network validation, remote clinical MFA, offline common-password screening, privacy reports/volume alerts, encrypted NIDA/insurance identifiers with keyed search, owner key rotation, protected metrics/allowlisted OTel, schema-column classification, security scanners/SBOM/Dependabot, stronger restores and synthetic k6 scripts. API contract is 0.3.0 with 40 implemented operations.
+
+Schema 00004 introduces privacy access/RLS, 00005 introduces approvals/idle/monitoring, 00006 introduces encrypted identifiers. Existing synthetic native data was privately backed up before migration; grants were rerun. Initial two-administrator bootstrap is a trusted maintenance/clinic process, not a single-admin API bypass. Maintain all original M01–M24 gaps in MODULE_STATUS.md; this extension does not implement clinical care, billing, full private documents or full patient exports.
+
+Local verification: make check and targeted PostgreSQL regressions passed, including race detection, migration rollback/reapply, live privacy/MFA demos, audit verification and restored runtime access. Source scanners reported no high gosec findings/secrets/reachable dependency vulnerabilities; Trivy reported zero high/critical image vulnerabilities; Syft generated SPDX. k6 baseline had zero failed requests, and a separate report-privacy check proves setup credentials/options are excluded. API/worker deployment state and hosted CI evidence are updated at final handoff.
+
 ## Next concrete task
 
-Finish remaining M01 security: implement staff invitation/activation and password-reset token lifecycle (hashed, expiring, single-use) with an explicit development delivery sink and a real-provider not-configured path. Define the clinic-approved administrator-assisted MFA-reset identity checks/approval model before exposing a reset command; no reset shortcut exists. Add granular permission administration with delegation checks, protected roles and last-usable-admin invariants. Add runtime-safe Argon2 parameter policy/upgrades, staff search, session device labels and maintenance/retention for expired auth buckets/tokens/idempotency records.
+Finish private document/quarantine/scanning workflows (M06), clinic-approved consent/guardian/retention policy, and representative security/performance review before real-patient use. Hosting, offsite PITR/anchors/paging, mail/invitations, new-device delivery and clinic paperwork were deferred explicitly; do not invent provider success or enable the inactive templates. Staff invitation/activation/password-reset lifecycle still needs implementation with a configured/explicit development delivery contract; no such email is currently sent. Review DEPLOYMENT_DECISIONS.md before production work. Full data-subject exports require the real record/file modules and expiration/ownership checks.
 
 After M01: finish M02 facility/department/room/practitioner boundaries; M04 identifiers/contacts/next-of-kin/duplicate preview/supervised merge; M05 consent/relationship policy/break-glass; M06 private uploads/scan quarantine. Define catalogue/billable-event contracts before appointment/encounter/clinical fulfillment. Follow milestone ordering from the original prompt through M24; do not reduce the scope to CRUD.
 
@@ -94,6 +104,7 @@ python3 scripts/generate-openapi.py
 go run github.com/getkin/kin-openapi/cmd/validate@v0.133.0 api/openapi/openapi.json
 python3 scripts/demo.py
 python3 scripts/demo-security.py
+python3 scripts/demo-privacy.py
 go run ./cmd/manage audit-seal
 go run ./cmd/manage audit-verify
 # Quiesce synthetic writes before comparing a backup to its source:
@@ -103,3 +114,5 @@ python3 scripts/restore-check.py
 Update README, MODULE_STATUS, permissions, workflows, integrations, operations and this record with actual implementation and command evidence. Keep accepted distinct from internally tested.
 
 The schema-3 image also passed the live MFA security demo in a read-only, capability-dropped container running as UID/GID 10001; that disposable container was stopped afterwards.
+
+Benchmark reproduction/limits are in PERFORMANCE.md; classification in DATA_CLASSIFICATION.md; emergency procedures in INCIDENT_RESPONSE.md. Preserve unrelated .vscode settings and all ignored credentials/database state.

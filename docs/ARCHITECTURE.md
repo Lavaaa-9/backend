@@ -51,3 +51,15 @@ JSON bodies are capped at 64 KiB, unknown fields and trailing JSON are rejected,
 Errors have a stable code/message/fields envelope and generated UUID request_id. Logs contain route templates and request metadata, excluding tokens, bodies, search strings and patient notes. API errors suppress database details. Health routes expose no credentials. Metrics, trace instrumentation and performance/load baselines are still pending.
 
 pgx timestamp decoding is explicitly UTC, independent of the host/container timezone. Date-only birth validation uses the configured clinic calendar date, including local midnight/New Year boundaries. Clinic reporting timezone defaults to Africa/Dar_es_Salaam; no reports are implemented yet. Future financial values must use PostgreSQL numeric and decimal-string DTOs. Proposed policy requiring clinic confirmation: TZS amounts rounded to whole shillings at posting, with rounding mode explicitly chosen before M16; no monetary operations currently implement an assumed policy.
+
+## Engineering security extension
+
+Schema 4 owns care assignments, patient-to-facility scope metadata, exceptional access/review and patient RLS. Schema 5 owns typed independent approvals, workstation activity/device metadata, privacy alerts and fixed search paths for audit functions. Schema 6 owns field-encrypted identifiers and their separate-key HMAC lookup index. API contracts are version 0.3.0 / 40 operations. All current columns have an explicit C1–C4 classification inventory with a PostgreSQL completeness test.
+
+The care-access ADR remains proposed for clinic approval; engineering defaults are synthetic-development policy only. Clinical users require live care evidence, reception retains registry scope, and administration has no automatic patient permissions. Ordinary account commands cannot grant administrator roles; typed, expiring independent approvals apply those changes/MFA resets with session revocation once.
+
+Optional OTel HTTP export is configured explicitly and uses only method/static route/status attributes. Prometheus metrics are permission/MFA protected. No collector is configured by default. Bounded privacy monitoring uses explicitly configured fixed-window thresholds and deduplicated alerts; off-hours scheduling is pending clinic input.
+
+Production rejects plaintext/unverifiable DB transport and untrusted forwarded scheme/IP claims. Hosting, backup/vendor regions, Cloudflare mode, independent audit-anchor delivery and clinic/legal decisions were deferred by the user; see DEPLOYMENT_DECISIONS.md. Current software controls are not clinic acceptance or proof of legal compliance.
+
+OpenTelemetry dependencies are pinned to v1.47.0. Runtime Alpine is pinned to 3.23.8, development/CI PostgreSQL image to 18.7-alpine3.23; native verification in this workspace used PostgreSQL 18.3. Tool release checksums live in deploy/security-tools.json and deploy/performance-tools.json.

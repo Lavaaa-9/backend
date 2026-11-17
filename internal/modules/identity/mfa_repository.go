@@ -11,8 +11,8 @@ func mfaEnabled(ctx context.Context, tx pgx.Tx, id string) (ok bool, err error) 
 	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM staff_mfa WHERE staff_id=$1::uuid AND confirmed_at IS NOT NULL)`, id).Scan(&ok)
 	return
 }
-func insertChallenge(ctx context.Context, tx pgx.Tx, hash, id string, version int, client string, ttl time.Duration) (cid string, err error) {
-	err = tx.QueryRow(ctx, `INSERT INTO login_challenges(token_hash,staff_id,staff_version,client_type,expires_at) VALUES($1,$2::uuid,$3,$4,now()+make_interval(secs=>$5)) RETURNING id::text`, hash, id, version, client, ttl.Seconds()).Scan(&cid)
+func insertChallenge(ctx context.Context, tx pgx.Tx, hash, id string, version int, client string, ttl time.Duration, label string) (cid string, err error) {
+	err = tx.QueryRow(ctx, `INSERT INTO login_challenges(token_hash,staff_id,staff_version,client_type,expires_at,device_label) VALUES($1,$2::uuid,$3,$4,now()+make_interval(secs=>$5),$6) RETURNING id::text`, hash, id, version, client, ttl.Seconds(), label).Scan(&cid)
 	return
 }
 func challengeStaff(ctx context.Context, db *pgxpool.Pool, hash, client string) (id string, err error) {
@@ -22,13 +22,14 @@ func challengeStaff(ctx context.Context, db *pgxpool.Pool, hash, client string) 
 
 type loginChallenge struct {
 	ID                string
+	DeviceLabel       string
 	Version, Attempts int
 	Expires           time.Time
 	Consumed          *time.Time
 }
 
 func lockChallenge(ctx context.Context, tx pgx.Tx, hash string) (c loginChallenge, err error) {
-	err = tx.QueryRow(ctx, `SELECT id::text,staff_version,attempts,expires_at,consumed_at FROM login_challenges WHERE token_hash=$1 FOR UPDATE`, hash).Scan(&c.ID, &c.Version, &c.Attempts, &c.Expires, &c.Consumed)
+	err = tx.QueryRow(ctx, `SELECT id::text,staff_version,attempts,expires_at,consumed_at,device_label FROM login_challenges WHERE token_hash=$1 FOR UPDATE`, hash).Scan(&c.ID, &c.Version, &c.Attempts, &c.Expires, &c.Consumed, &c.DeviceLabel)
 	return
 }
 func countChallengeAttempt(ctx context.Context, tx pgx.Tx, id string) error {
@@ -84,7 +85,7 @@ func insertRecoveryCode(ctx context.Context, tx pgx.Tx, id, hash string) error {
 	return e
 }
 func lockLiveSession(ctx context.Context, tx pgx.Tx, id, sid string) (verified bool, err error) {
-	err = tx.QueryRow(ctx, `SELECT mfa_verified FROM sessions WHERE id=$1::uuid AND staff_id=$2::uuid AND revoked_at IS NULL AND access_expires_at>now() AND expires_at>now() FOR UPDATE`, sid, id).Scan(&verified)
+	err = tx.QueryRow(ctx, `SELECT mfa_verified FROM sessions WHERE id=$1::uuid AND staff_id=$2::uuid AND revoked_at IS NULL AND access_expires_at>now() AND expires_at>now() AND (client_type<>'web' OR last_seen_at>now()-interval '15 minutes') FOR UPDATE`, sid, id).Scan(&verified)
 	return
 }
 func bumpSecurityVersion(ctx context.Context, tx pgx.Tx, id string) error {

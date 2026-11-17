@@ -13,3 +13,7 @@
 | Clinical knowledge | None | Diagnosis/medication catalogues not populated; no invented clinical truth, interaction checking or critical thresholds |
 
 Provider webhooks, signatures, replay protection, reconciliation and restricted outbound destinations remain M22 requirements. Never convert a timeout or missing configuration into success. The local sink is explicitly labeled and unavailable outside development. MinIO is optional and unused by the current API. No Redis dependency is required.
+
+## Deferred engineering-provider decisions
+
+The user explicitly deferred production hosting/offsite storage/mail choices. No Cloudflare mode, transfer permission, S3 destination, real notification delivery, external telemetry delivery, immutable audit anchor or pager has been fabricated. Inactive backup/systemd templates and exact prerequisites are in DEPLOYMENT_DECISIONS.md and SECURITY_ENGINEERING.md. Optional telemetry exports only static HTTP metadata when explicitly configured; default configuration has no collector. Production outbox consumers without a provider fail visibly and retain durable events; the development sink remains explicitly labeled.
