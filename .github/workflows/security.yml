@@ -37,7 +37,7 @@ jobs:
         run: .local/tools/trivy image --scanners vuln --severity HIGH,CRITICAL --exit-code 1 spartial-backend:security
       - name: Generate SPDX software bill of materials
         run: .local/tools/syft docker:spartial-backend:security -o spdx-json=spartial-sbom.spdx.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: spartial-sbom
           path: spartial-sbom.spdx.json
