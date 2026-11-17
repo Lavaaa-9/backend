@@ -16,7 +16,7 @@ This maps the supplied Phase 1 engineering spec to the current implementation. I
 | T10 | externally blocked | Reviewed systemd five-minute/daily timer and failure-journal templates supplied. Deployment, independent anchor shipping and real alert delivery deferred with hosting. |
 | T11 | internally tested | Production rejects plaintext/unverified DB URLs and requires explicit CA path. Exact IP/CIDR proxy trust, spoofing regressions, HSTS and remote-clinical MFA. Real production certificate/provider setup remains deployment work. |
 | T12 | externally blocked | Cloudflare DNS-only/proxy choice and data-location review deferred by user; no mode selected or production DNS changed. |
-| T13 | in progress | Pinned gosec/govulncheck/gitleaks/Trivy/Syft security workflow and Dependabot. Source scanners pass locally; image and first hosted run evidence recorded below when observed. |
+| T13 | internally tested | Pinned gosec/govulncheck/gitleaks/Trivy/Syft workflow, SPDX artifact and Dependabot passed the first hosted security run. Backend workflow also passed PostgreSQL/race/build/OpenAPI/report-privacy checks. Hosted evidence below; no scanner finding was bypassed. |
 | T14 | externally blocked | Clinic-owned registration, DPO, contracts, consent wording, retention and legal notification responsibilities documented; not generated or treated as filed by code. |
 | T15 | internally tested | Typed approval requests, one-hour expiry, requester/approver separation, live MFA admin checks, target version and atomic audited effects. |
 | T16 | internally tested | Ordinary API cannot create/promote administrators directly. Independent approval applies role grant/MFA reset once and revokes target sessions; trusted bootstrap remains outside ordinary API. |
@@ -38,4 +38,13 @@ Policy: [care-access decision](adr/0001-care-access-policy.md). Source request: 
 
 ## Local verification evidence
 
-Schema 6 native migration, `make check` (including real PostgreSQL and race detection), up/down/up and classification completeness, live privacy/MFA demos, audit verification, the stronger dump restore, OpenAPI validation and Compose configuration checks passed. Gosec v2.30.0 reported zero high findings; govulncheck v1.9.0 found no reachable vulnerabilities; the checksum-pinned gitleaks source scan found no secrets; Trivy v0.76.2 found zero high/critical image vulnerabilities on Alpine 3.23.8; Syft v1.57.2 generated an SPDX SBOM. k6 v2.4.0 baseline and report-privacy checks passed. Hosted workflow evidence is added after the push is observed.
+Schema 6 native migration, `make check` (including real PostgreSQL and race detection), up/down/up and classification completeness, live privacy/MFA demos, audit verification, the stronger dump restore, OpenAPI validation and Compose configuration checks passed. Gosec v2.30.0 reported zero high findings; govulncheck v1.9.0 found no reachable vulnerabilities; the checksum-pinned gitleaks source scan found no secrets; Trivy v0.76.2 found zero high/critical image vulnerabilities on Alpine 3.23.8; Syft v1.57.2 generated an SPDX SBOM. k6 v2.4.0 baseline and report-privacy checks passed. Hosted backend and security workflows passed on ae658b9c589e7f8029a5c08bdf3a64a56cc99e5c. See the links below.
+
+## Hosted verification
+
+Implementation commit: ae658b9c589e7f8029a5c08bdf3a64a56cc99e5c.
+
+- [Backend workflow passed](https://github.com/Lavaaa-9/backend/actions/runs/44129631700): real PostgreSQL 18.7 service, formatting/vet/race tests/build/checksums, benchmark-report privacy, dependency check, generated-contract validation and Docker build.
+- [Security workflow passed](https://github.com/Lavaaa-9/backend/actions/runs/44129631581): published-history secret scan, high-severity static analysis, dependency vulnerabilities, image high/critical gate, SPDX generation and uploaded SBOM artifact.
+
+The final non-root read-only container also passed the live privacy workflow as UID/GID 10001; the disposable container was stopped afterwards. The native schema-6 API/worker remain running. External deployment, clinic approval and provider-dependent items above remain open.

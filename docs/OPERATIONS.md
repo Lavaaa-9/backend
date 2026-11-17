@@ -68,3 +68,5 @@ Native synthetic data was privately backed up before migrations 00004–00006, t
 The current worker can run privacy monitoring under explicitly configured thresholds; zero disables a rule. It uses the development sink only in development and fails unconfigured production delivery jobs visibly. New device labels are descriptions, not trusted fingerprints or delivered emails. The frontend still needs its own human-idle lock; server request activity can include polling.
 
 Local scanner/image/SBOM evidence is in SECURITY_TASK_STATUS.md. The small synthetic k6 baseline, reproducible commands and limitations are in PERFORMANCE.md. Neither local nor hosted CI success is an independent penetration test, clinic acceptance or legal certification.
+
+Hosted verification for the schema-6 implementation passed: backend run 44129631700 (PostgreSQL 18.7/race/build/contract/report-privacy) and security run 44129631581 (source/dependencies/image gates plus SPDX artifact). See SECURITY_TASK_STATUS.md for links and all remaining external/clinic gates.

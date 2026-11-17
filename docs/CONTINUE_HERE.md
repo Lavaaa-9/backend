@@ -116,3 +116,9 @@ Update README, MODULE_STATUS, permissions, workflows, integrations, operations a
 The schema-3 image also passed the live MFA security demo in a read-only, capability-dropped container running as UID/GID 10001; that disposable container was stopped afterwards.
 
 Benchmark reproduction/limits are in PERFORMANCE.md; classification in DATA_CLASSIFICATION.md; emergency procedures in INCIDENT_RESPONSE.md. Preserve unrelated .vscode settings and all ignored credentials/database state.
+
+## Final verification and push record
+
+Implementation ae658b9c589e7f8029a5c08bdf3a64a56cc99e5c was pushed to origin/main. Hosted backend run 44129631700 and security run 44129631581 both passed, including PostgreSQL 18.7/race checks, OpenAPI/report-privacy, all scanner gates and SPDX artifact publication. Evidence links are in SECURITY_TASK_STATUS.md. Published main history scanned clean; private local checkpoint refs are not part of the published source scan. Unrelated .vscode settings remain untracked and untouched.
+
+Native API/worker were rebuilt/restarted on 8080 against schema 6; readiness and the live contract (0.3.0, 40 operations) passed. The final digest-pinned non-root read-only container passed the live privacy/identifier/review demo as UID/GID 10001 and was stopped. No production resources, external delivery or legal acceptance are claimed. Docs-only follow-up records this observed evidence; all code is in the implementation commit.
