@@ -8,13 +8,12 @@ Requires Go **1.27.4**, PostgreSQL **18** command-line/server tools, Python 3, a
 
 ```bash
 ./scripts/dev-db.sh
-set -a
-source .env
-set +a
-go run ./cmd/api
+go run .
 ```
 
 The script creates an isolated cluster under `.local/postgres`, listening on `127.0.0.1:55432`; generates credentials in ignored, mode-600 `.env`; applies migrations; creates a restricted application database role; and seeds synthetic accounts. It preserves existing accounts and never resets their passwords. The migration owner and runtime account are separate. Do not reuse this database for real patients.
+
+Run `go run .` from the project root to start the API. It loads `.env` automatically, preserving any variables already set in your shell. PostgreSQL must be running with migrations and runtime grants applied. Docker and Podman are optional.
 
 The API listens at `http://127.0.0.1:8080`. In another terminal, export `.env` as above and run:
 
