@@ -81,11 +81,17 @@ func Migrate(ctx context.Context, url string) error {
 	return goose.UpContext(ctx, conn, "migrations")
 }
 func Audit(ctx context.Context, tx pgx.Tx, actor, action, resource, patient, request, outcome string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO audit_events(actor_id,action,resource_id,patient_id,request_id,outcome) VALUES(NULLIF($1,'')::uuid,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5::uuid,$6)`, actor, action, resource, patient, request, outcome)
+	return AuditReason(ctx, tx, actor, action, resource, patient, request, outcome, "")
+}
+
+// AuditReason records a short, non-PHI machine reason (for example "mfa_required").
+// Never place clinical content, search strings or credentials in reason.
+func AuditReason(ctx context.Context, tx pgx.Tx, actor, action, resource, patient, request, outcome, reason string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO audit_events(actor_id,action,resource_id,patient_id,request_id,outcome,reason) VALUES(NULLIF($1,'')::uuid,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5::uuid,$6,NULLIF($7,''))`, actor, action, resource, patient, request, outcome, reason)
 	return err
 }
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 func CheckSchema(ctx context.Context, db *pgxpool.Pool) error {
 	var version int
@@ -96,7 +102,7 @@ func CheckSchema(ctx context.Context, db *pgxpool.Pool) error {
 }
 func CheckRuntimeRole(ctx context.Context, db *pgxpool.Pool) error {
 	var unsafe bool
-	e := db.QueryRow(ctx, `SELECT rolsuper OR rolcreaterole OR rolcreatedb OR has_table_privilege(current_user,'audit_events','UPDATE,DELETE,TRUNCATE') FROM pg_roles WHERE rolname=current_user`).Scan(&unsafe)
+	e := db.QueryRow(ctx, `SELECT rolsuper OR rolcreaterole OR rolcreatedb OR has_table_privilege(current_user,'audit_events','UPDATE,DELETE,TRUNCATE') OR has_table_privilege(current_user,'audit_seals','INSERT,UPDATE,DELETE,TRUNCATE') FROM pg_roles WHERE rolname=current_user`).Scan(&unsafe)
 	if e != nil {
 		return e
 	}

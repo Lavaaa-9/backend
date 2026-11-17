@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"spartial.local/backend/internal/security"
 	"strings"
 	"time"
 	_ "time/tzdata"
@@ -15,6 +16,11 @@ type Config struct {
 	Origins                []string
 	CookieSecure           bool
 	Timezone               string
+	// Keys encrypts MFA secrets (and later selected PHI fields). Nil means MFA enrollment is unavailable.
+	Keys *security.Keyring
+	// MFAEnforcePrivileged blocks privileged roles (administrator, privacy-reviewer) from protected
+	// routes until their session has passed a second factor. Always on in production.
+	MFAEnforcePrivileged bool
 }
 
 func Load() (Config, error) {
@@ -47,6 +53,25 @@ func Load() (Config, error) {
 		c.Origins = append(c.Origins, o)
 	}
 	c.CookieSecure = c.Env != "development" && c.Env != "test"
+	if spec := os.Getenv("PHI_ENCRYPTION_KEYS"); spec != "" {
+		k, err := security.ParseKeyring(spec, os.Getenv("PHI_ACTIVE_KEY_ID"))
+		if err != nil {
+			return c, fmt.Errorf("invalid PHI_ENCRYPTION_KEYS/PHI_ACTIVE_KEY_ID: %w", err)
+		}
+		c.Keys = k
+	} else if c.Env == "production" {
+		return c, fmt.Errorf("PHI_ENCRYPTION_KEYS is required in production")
+	}
+	switch get("MFA_ENFORCE_PRIVILEGED", map[bool]string{true: "true", false: "false"}[c.Env == "production"]) {
+	case "true":
+		c.MFAEnforcePrivileged = true
+	case "false":
+		if c.Env == "production" {
+			return c, fmt.Errorf("MFA_ENFORCE_PRIVILEGED cannot be disabled in production")
+		}
+	default:
+		return c, fmt.Errorf("MFA_ENFORCE_PRIVILEGED must be true or false")
+	}
 	return c, nil
 }
 func get(k, d string) string {

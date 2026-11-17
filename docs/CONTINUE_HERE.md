@@ -2,7 +2,7 @@
 
 ## Saved state — 17 November 2026
 
-The repository began with only the implementation prompt. Milestone A now has a running, tested vertical slice: Fiber v3.7.0, PostgreSQL, staff authentication/administration, fixed roles/permissions and facility assignments, patient registry with unique MRNs/search/versioned edits, audit, durable idempotency/outbox and a separate explicit development sink worker. The API contract contains 20 implemented operations.
+The repository began with only the implementation prompt. Milestone A now has a running, tested vertical slice: Fiber v3.7.0, PostgreSQL, staff authentication/administration, fixed roles/permissions and facility assignments, patient registry with unique MRNs/search/versioned edits, audit, durable idempotency/outbox and a separate explicit development sink worker. The API contract contains 25 implemented operations.
 
 **The full backend is unfinished.** Read MODULE_STATUS.md before choosing the next task. M01/M02/M04/M05/M18/M24 are in progress; the other modules are not started. No module is clinic accepted. No production service/data has been touched or deployed. No external provider has been tested.
 
@@ -43,11 +43,33 @@ The seed preserves existing passwords. `scripts/dev-db.sh stop` shuts down only 
 
 Tests create unique databases and restricted roles per fixture using TEST_DATABASE_URL. No SQLite mocks prove locking. Coverage includes concurrent same-key registration, audit-failure rollback, shared phones/MRNs, exact/approximate/unknown births, stale/cross-facility edits, audit grants/triggers, refresh rotation and concurrent reuse, suspension/reactivation/role changes, last-administrator concurrency, cookie/Origin behavior, password/logout/session ownership, durable rate limits, and outbox lease fencing/exhaustion. Later module tests remain absent because the modules are absent.
 
+## Security phase 1 patch integration — 17 November 2026
+
+The supplied spartial-security-phase1.patch is integrated, with additional hardening and recovery-code regeneration. Current schema is migration 00003 / SchemaVersion 3 and the OpenAPI contract has 25 implemented operations (version 0.2.0).
+
+Implemented and verified: challenge-based TOTP login with no pre-factor session, AES-256-GCM row-bound secret encryption/key IDs, replay protection, hashed one-use recovery codes and regeneration, privileged MFA assurance, live account/session revalidation in MFA mutation transactions, bounded/audited management attempts, ten-minute pending enrollment expiry, challenge invalidation on factor lifecycle changes, and audited disablement with session revocation. MFA SQL lives in mfa_repository.go; services retain policy and transaction coordination.
+
+Audit sealing now waits for existing writers using a short SHARE barrier and selects a contiguous settle-eligible prefix; the original patch's age filter alone could skip lower IDs that commit later. Structured event digests avoid delimiter ambiguity. Runtime roles cannot insert seals or execute sealing. Verification checks range metadata/hash/counts and reports the unsealed tail separately. Off-host head anchoring and deployment scheduling remain unconfigured.
+
+Local native setup safely generated a missing development keyring in ignored mode-600 .env, preserved existing credentials/keys, applied migration 00003, and reran runtime grants. A private pre-migration synthetic backup is retained under ignored .local/backups/. API/worker were rebuilt and restarted on the existing ports. No production data or service was changed.
+
+Current verification evidence:
+
+- `make check` passed with TEST_DATABASE_URL: formatting, vet, race-enabled unit/real-PostgreSQL integration tests, command builds and module checksum verification.
+- `go test -count=1 -v ./tests/integration` passed the original foundation/MFA tests plus security_regressions_test.go. New scenarios cover regeneration/concurrent recovery consumption, management throttling/audit/expiry, stale revoked sessions, challenge expiry, browser/mobile isolation and refresh assurance, pending audit writers, settle-prefix ordering and runtime seal denial.
+- `.local/tools/govulncheck ./...` passed with no known vulnerabilities; same pinned v1.9.0 scanner.
+- OpenAPI generator (25 operations) and kin-openapi v0.133.0 validation passed; Compose `config --quiet` passed.
+- `podman build -t localhost/spartial-backend:development .` passed. Full Compose stack execution remains unverified.
+- Live `python3 scripts/demo.py` and `python3 scripts/demo-security.py` passed. The latter deactivated its disposable synthetic staff account after exercising MFA without printing codes/passwords.
+- `go run ./cmd/manage audit-seal` sealed the eligible development prefix; `audit-verify` reported it intact with an explicit unsealed tail.
+- `python3 scripts/restore-check.py` passed with the schema-3 synthetic database and audit seals. This is a row-count restore smoke check, not file restoration, key recovery, full privilege restoration or off-host-anchor verification.
+- Bash/Python syntax, whitespace checks and a scan ensuring local passwords/encryption key material are absent from publishable files passed.
+
+See SECURITY_PHASE1.md for frontend enrollment/challenge/recovery instructions and operational limits. Existing unrelated .vscode settings were preserved.
+
 ## Next concrete task
 
-Finish M01 security before clinical expansion: implement TOTP MFA enrollment/confirmation and challenge-based login, hashed recovery codes with audited recovery and reauthentication for disablement. Keep secrets encrypted using an explicit configured key and test challenge expiry/reuse/revocation and privilege escalation against real PostgreSQL. Do not retrofit token issuance before the second factor is satisfied. Plan an additive migration and update SchemaVersion/OpenAPI/tests together.
-
-Then implement staff invitation/activation and reset-token lifecycle (hashed, expiring, single-use) with an explicit development delivery sink and a real-provider not-configured path. Add granular permission administration with delegation checks, protected roles and last-usable-admin invariants. Add runtime-safe Argon2 parameter policy/upgrades, staff search, session device labels and maintenance/retention for expired auth buckets/tokens/idempotency records.
+Finish remaining M01 security: implement staff invitation/activation and password-reset token lifecycle (hashed, expiring, single-use) with an explicit development delivery sink and a real-provider not-configured path. Define the clinic-approved administrator-assisted MFA-reset identity checks/approval model before exposing a reset command; no reset shortcut exists. Add granular permission administration with delegation checks, protected roles and last-usable-admin invariants. Add runtime-safe Argon2 parameter policy/upgrades, staff search, session device labels and maintenance/retention for expired auth buckets/tokens/idempotency records.
 
 After M01: finish M02 facility/department/room/practitioner boundaries; M04 identifiers/contacts/next-of-kin/duplicate preview/supervised merge; M05 consent/relationship policy/break-glass; M06 private uploads/scan quarantine. Define catalogue/billable-event contracts before appointment/encounter/clinical fulfillment. Follow milestone ordering from the original prompt through M24; do not reduce the scope to CRUD.
 
@@ -71,8 +93,13 @@ go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
 python3 scripts/generate-openapi.py
 go run github.com/getkin/kin-openapi/cmd/validate@v0.133.0 api/openapi/openapi.json
 python3 scripts/demo.py
+python3 scripts/demo-security.py
+go run ./cmd/manage audit-seal
+go run ./cmd/manage audit-verify
 # Quiesce synthetic writes before comparing a backup to its source:
 python3 scripts/restore-check.py
 ```
 
 Update README, MODULE_STATUS, permissions, workflows, integrations, operations and this record with actual implementation and command evidence. Keep accepted distinct from internally tested.
+
+The schema-3 image also passed the live MFA security demo in a read-only, capability-dropped container running as UID/GID 10001; that disposable container was stopped afterwards.

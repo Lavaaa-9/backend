@@ -53,3 +53,9 @@ Error shape:
 ```
 
 Use request_id for support without logging credentials or medical bodies. Access credentials are short-lived opaque tokens. Server session state and live permissions are checked on every protected request.
+
+## MFA flow
+
+An enrolled staff login responds with `mfa_required`, `challenge_token` and `expires_in`, without access/refresh credentials. Complete `POST /api/v1/auth/mfa/verify` using matching client_type plus exactly one `code` or `recovery_code`. Successful browser verification sets the normal HttpOnly refresh cookie and requires allowed Origin. Mobile verification returns refresh JSON without Origin.
+
+Enrollment (`/auth/mfa/enroll`) needs `current_password`; confirmation (`/auth/mfa/confirm`) needs a six-digit code and returns ten recovery codes once. Regeneration (`/auth/mfa/recovery-codes/regenerate`) and disablement (`/auth/mfa/disable`) require password plus one unused factor. See SECURITY_PHASE1.md for replay, revocation, expiry and rate limits. `python3 scripts/demo-security.py` provides a runnable synthetic journey without printing credentials.

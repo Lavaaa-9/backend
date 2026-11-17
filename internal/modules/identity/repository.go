@@ -22,6 +22,9 @@ type Actor struct {
 	SessionID   string   `json:"-"`
 	ClientType  string   `json:"-"`
 	Permissions []string `json:"permissions"`
+	// MFAVerified is the session's assurance level; Privileged comes from the live role row.
+	MFAVerified bool `json:"mfa_verified"`
+	Privileged  bool `json:"-"`
 }
 
 func (a Actor) Can(p string) bool {
@@ -51,8 +54,9 @@ func (r Repository) Actor(ctx context.Context, token string) (Actor, error) {
 	var a Actor
 	err := r.DB.QueryRow(ctx, `SELECT u.id::text,u.email,u.display_name,u.role_name,u.active,u.version,s.id::text,s.client_type,
  COALESCE((SELECT array_agg(sf.facility_id::text ORDER BY sf.facility_id) FROM staff_facilities sf JOIN facilities f ON f.id=sf.facility_id AND f.active WHERE sf.staff_id=u.id),'{}'),
- COALESCE((SELECT array_agg(permission_name ORDER BY permission_name) FROM role_permissions WHERE role_name=u.role_name),'{}')
- FROM sessions s JOIN staff u ON u.id=s.staff_id WHERE s.access_hash=$1 AND u.active AND s.revoked_at IS NULL AND s.access_expires_at>now() AND s.expires_at>now()`, security.Digest(token)).Scan(&a.ID, &a.Email, &a.DisplayName, &a.Role, &a.Active, &a.Version, &a.SessionID, &a.ClientType, &a.FacilityIDs, &a.Permissions)
+ COALESCE((SELECT array_agg(permission_name ORDER BY permission_name) FROM role_permissions WHERE role_name=u.role_name),'{}'),
+ s.mfa_verified,(SELECT privileged FROM roles WHERE name=u.role_name)
+ FROM sessions s JOIN staff u ON u.id=s.staff_id WHERE s.access_hash=$1 AND u.active AND s.revoked_at IS NULL AND s.access_expires_at>now() AND s.expires_at>now()`, security.Digest(token)).Scan(&a.ID, &a.Email, &a.DisplayName, &a.Role, &a.Active, &a.Version, &a.SessionID, &a.ClientType, &a.FacilityIDs, &a.Permissions, &a.MFAVerified, &a.Privileged)
 	return a, err
 }
 func (r Repository) Limit(ctx context.Context, bucket string) (bool, error) {
@@ -136,9 +140,9 @@ func (r Repository) Sessions(ctx context.Context, id string) ([]Session, error) 
 	return out, rows.Err()
 }
 
-func createSession(ctx context.Context, tx pgx.Tx, uid, client, accessHash, refreshHash string) (string, error) {
+func createSession(ctx context.Context, tx pgx.Tx, uid, client, accessHash, refreshHash string, mfa bool) (string, error) {
 	var sid string
-	e := tx.QueryRow(ctx, `INSERT INTO sessions(staff_id,client_type,access_hash,access_expires_at,expires_at) VALUES($1::uuid,$2,$3,now()+interval '15 minutes',now()+interval '7 days') RETURNING id::text`, uid, client, accessHash).Scan(&sid)
+	e := tx.QueryRow(ctx, `INSERT INTO sessions(staff_id,client_type,access_hash,access_expires_at,expires_at,mfa_verified) VALUES($1::uuid,$2,$3,now()+interval '15 minutes',now()+interval '7 days',$4) RETURNING id::text`, uid, client, accessHash, mfa).Scan(&sid)
 	if e != nil {
 		return "", e
 	}

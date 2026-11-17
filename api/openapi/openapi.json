@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "Spartial Polyclinic Foundation API",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "Milestone A implementation. All listed routes exist; later clinical/patient-access modules are tracked in docs/MODULE_STATUS.md. Not clinic accepted. Timestamps RFC3339 UTC, date-only YYYY-MM-DD. Future financial amounts must be exact decimal strings; no financial endpoints are implemented."
   },
   "servers": [
@@ -52,7 +52,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -132,7 +132,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -185,7 +185,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -265,7 +265,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -318,7 +318,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -398,7 +398,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -415,7 +415,7 @@
       "post": {
         "operationId": "staff_login",
         "summary": "Staff login",
-        "description": "Web requires an allowed Origin and sets a path-scoped HttpOnly SameSite=Strict cookie (Secure outside development/test). Mobile requests must have no Origin. Credentials are rate limited by direct peer IP and normalized email: 10 attempts per 15 minutes. No forwarded client IP is trusted. Access lifetime 15 minutes; session hard expiry 7 days.",
+        "description": "Staff with a confirmed second factor receive a Challenge (no tokens, no cookie) and must call /api/v1/auth/mfa/verify. Web requires an allowed Origin and sets a path-scoped HttpOnly SameSite=Strict cookie (Secure outside development/test). Mobile requests must have no Origin. Credentials are rate limited by direct peer IP and normalized email: 10 attempts per 15 minutes. No forwarded client IP is trusted. Access lifetime 15 minutes; session hard expiry 7 days.",
         "tags": [
           "authentication"
         ],
@@ -431,6 +431,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/MobileTokens"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Challenge"
                     }
                   ]
                 }
@@ -466,7 +469,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -546,7 +549,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -616,7 +619,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -696,7 +699,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -759,7 +762,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -839,7 +842,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -889,7 +892,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -969,7 +972,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1038,7 +1041,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -1118,7 +1121,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1168,7 +1171,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -1248,7 +1251,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1309,7 +1312,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -1389,7 +1392,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1427,6 +1430,821 @@
                 "required": [
                   "current_password",
                   "new_password"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/verify": {
+      "post": {
+        "operationId": "complete_second-factor_login",
+        "summary": "Complete second-factor login",
+        "description": "Same Origin/client rules as login. Accepts a TOTP code (each 30-second step usable once, one step of drift) or an unused recovery code. Wrong, reused, expired, exhausted or stale challenges (password/role/suspension changed) return 401 and are audited. Rate limited per IP and per account. Issues an MFA-verified session.",
+        "tags": [
+          "authentication"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Tokens"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MobileTokens"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON, unknown field, or invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked, or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in permitted scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, uniqueness, or idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 64 KiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "application/json required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation or invalid database reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Authentication rate limit; retry after 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Redacted internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MFAVerify"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/enroll": {
+      "post": {
+        "operationId": "start_authenticator_enrollment",
+        "summary": "Start authenticator enrollment",
+        "description": "Pending enrollment expires after ten minutes. Management commands share a ten-attempt per-account 15-minute limit and audit denied factors/reauthentication. Requires password re-authentication. Secret is stored AES-256-GCM encrypted with a configured key bound to the staff id. 409 if a factor is already confirmed; 503 when no encryption keys are configured.",
+        "tags": [
+          "authentication"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Enrollment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON, unknown field, or invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked, or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in permitted scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, uniqueness, or idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 64 KiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "application/json required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation or invalid database reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Authentication rate limit; retry after 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Redacted internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "current_password": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "writeOnly": true
+                  }
+                },
+                "required": [
+                  "current_password"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/confirm": {
+      "post": {
+        "operationId": "confirm_authenticator_enrollment",
+        "summary": "Confirm authenticator enrollment",
+        "description": "Returns 10 single-use recovery codes exactly once (only digests are stored). Pending enrollment must be unexpired. Upgrades the current session to MFA-verified, revokes all other sessions and invalidates pending login challenges.",
+        "tags": [
+          "authentication"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "recovery_codes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "recovery_codes"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON, unknown field, or invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked, or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in permitted scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, uniqueness, or idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 64 KiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "application/json required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation or invalid database reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Authentication rate limit; retry after 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Redacted internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "pattern": "^[0-9]{6}$"
+                  }
+                },
+                "required": [
+                  "code"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/disable": {
+      "post": {
+        "operationId": "disable_second_factor",
+        "summary": "Disable second factor",
+        "description": "Requires password and exactly one current factor. Deletes the secret and recovery codes, invalidates pending challenges and revokes every session. Privileged roles are then blocked again where MFA is enforced.",
+        "tags": [
+          "authentication"
+        ],
+        "responses": {
+          "204": {
+            "description": "Completed; no content"
+          },
+          "400": {
+            "description": "Malformed JSON, unknown field, or invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked, or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in permitted scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, uniqueness, or idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 64 KiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "application/json required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation or invalid database reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Authentication rate limit; retry after 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Redacted internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "current_password": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "writeOnly": true
+                  },
+                  "code": {
+                    "type": "string",
+                    "pattern": "^[0-9]{6}$"
+                  },
+                  "recovery_code": {
+                    "type": "string",
+                    "maxLength": 32
+                  }
+                },
+                "required": [
+                  "current_password"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/mfa/recovery-codes/regenerate": {
+      "post": {
+        "operationId": "regenerate_mfa_recovery_codes",
+        "summary": "Regenerate MFA recovery codes",
+        "description": "Requires password and exactly one unused current TOTP or recovery code. Replaces all ten recovery codes, shows them once, revokes other sessions and invalidates pending login challenges. Management attempts share a ten-attempt per-account 15-minute limit; failures are audited. Serialize requests and never automatically retry after an ambiguous response.",
+        "tags": [
+          "authentication"
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "recovery_codes": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "recovery_codes"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON, unknown field, or invalid body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked, or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Record not found in permitted scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Version, uniqueness, or idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 64 KiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "application/json required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation or invalid database reference",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Authentication rate limit; retry after 15 minutes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Redacted internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "current_password": {
+                    "type": "string",
+                    "maxLength": 256,
+                    "writeOnly": true
+                  },
+                  "code": {
+                    "type": "string",
+                    "minLength": 6,
+                    "maxLength": 6
+                  },
+                  "recovery_code": {
+                    "type": "string",
+                    "maxLength": 32
+                  }
+                },
+                "required": [
+                  "current_password"
                 ]
               }
             }
@@ -1486,7 +2304,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -1566,7 +2384,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1622,7 +2440,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -1702,7 +2520,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1787,7 +2605,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -1867,7 +2685,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1944,7 +2762,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -2024,7 +2842,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2092,7 +2910,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -2172,7 +2990,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2251,7 +3069,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -2331,7 +3149,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2426,7 +3244,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -2506,7 +3324,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2594,7 +3412,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -2674,7 +3492,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2741,7 +3559,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -2821,7 +3639,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2912,7 +3730,7 @@
             }
           },
           "403": {
-            "description": "Permission, facility, or browser-origin denied",
+            "description": "Permission, facility, browser-origin, or mfa_required (privileged role without MFA-verified session) denied",
             "content": {
               "application/json": {
                 "schema": {
@@ -2992,7 +3810,7 @@
             }
           },
           "503": {
-            "description": "Database not ready",
+            "description": "Database not ready, or mfa_unavailable (encryption keys not configured)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3150,6 +3968,10 @@
             "items": {
               "type": "string"
             }
+          },
+          "mfa_verified": {
+            "type": "boolean",
+            "description": "True only for sessions created after a verified second factor."
           }
         },
         "required": [
@@ -3160,7 +3982,8 @@
           "active",
           "version",
           "facility_ids",
-          "permissions"
+          "permissions",
+          "mfa_verified"
         ]
       },
       "Tokens": {
@@ -3682,6 +4505,15 @@
             "type": "string",
             "format": "uuid"
           },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "facility_id": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
           "outcome": {
             "type": "string",
             "enum": [
@@ -3703,7 +4535,9 @@
           "patient_id",
           "request_id",
           "outcome",
-          "created_at"
+          "created_at",
+          "reason",
+          "facility_id"
         ]
       },
       "Health": {
@@ -3720,6 +4554,81 @@
         },
         "required": [
           "status"
+        ]
+      },
+      "Challenge": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mfa_required": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "challenge_token": {
+            "type": "string",
+            "description": "Single-use, 5-minute, at most 5 attempts. No session exists until verified."
+          },
+          "expires_in": {
+            "type": "integer",
+            "example": 300
+          }
+        },
+        "required": [
+          "mfa_required",
+          "challenge_token",
+          "expires_in"
+        ]
+      },
+      "MFAVerify": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "challenge_token": {
+            "type": "string",
+            "minLength": 32,
+            "maxLength": 128
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[0-9]{6}$",
+            "description": "Current TOTP code. Exactly one of code or recovery_code."
+          },
+          "recovery_code": {
+            "type": "string",
+            "maxLength": 32,
+            "description": "Single-use recovery code, e.g. ABCD-EFGH-IJKL-MNOP."
+          },
+          "client_type": {
+            "type": "string",
+            "enum": [
+              "web",
+              "mobile"
+            ]
+          }
+        },
+        "required": [
+          "challenge_token",
+          "client_type"
+        ]
+      },
+      "Enrollment": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "Base32 TOTP secret; show once for manual entry."
+          },
+          "provisioning_uri": {
+            "type": "string",
+            "description": "otpauth:// URI to render as a QR code. Never log it."
+          }
+        },
+        "required": [
+          "secret",
+          "provisioning_uri"
         ]
       }
     }

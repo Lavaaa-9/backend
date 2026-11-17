@@ -54,7 +54,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 	if err != nil {
 		return nil, err
 	}
-	api := API{db, identity.Service{Repo: identity.Repository{DB: db}, DummyHash: dummy}, patients.Service{DB: db, Location: location}, facilities.Service{DB: db}, cfg, log}
+	api := API{db, identity.Service{Repo: identity.Repository{DB: db}, DummyHash: dummy, Keys: cfg.Keys, Issuer: "Spartial Polyclinic"}, patients.Service{DB: db, Location: location}, facilities.Service{DB: db}, cfg, log}
 	app := fiber.New(fiber.Config{AppName: "Spartial API", BodyLimit: 64 * 1024, Immutable: true, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, StructValidator: structValidator{validator.New()}, JSONDecoder: strictJSON, ErrorHandler: api.handleError})
 	app.Use(func(c fiber.Ctx) error {
 		id := uuid.NewString()
@@ -141,6 +141,77 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		api.clearCookie(c)
 		return c.SendStatus(204)
+	})
+	auth.Post("/mfa/verify", func(c fiber.Ctx) error {
+		var in identity.MFAVerify
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		if e := api.client(c, in.ClientType); e != nil {
+			return e
+		}
+		t, e := api.Identity.VerifyMFA(c.Context(), in, c.IP(), rid(c))
+		if e != nil {
+			return e
+		}
+		return api.tokens(c, t, in.ClientType)
+	})
+	auth.Post("/mfa/enroll", api.authenticate, func(c fiber.Ctx) error {
+		var in struct {
+			CurrentPassword string `json:"current_password" validate:"required,max=256"`
+		}
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Identity.StartEnrollment(c.Context(), actor(c), in.CurrentPassword, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(v)
+	})
+	auth.Post("/mfa/confirm", api.authenticate, func(c fiber.Ctx) error {
+		var in struct {
+			Code string `json:"code" validate:"required,len=6,numeric"`
+		}
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		codes, e := api.Identity.ConfirmEnrollment(c.Context(), actor(c), in.Code, rid(c))
+		if e != nil {
+			return e
+		}
+		// Recovery codes are shown exactly once; only their digests are stored.
+		return c.JSON(fiber.Map{"recovery_codes": codes})
+	})
+	auth.Post("/mfa/disable", api.authenticate, func(c fiber.Ctx) error {
+		var in struct {
+			CurrentPassword string `json:"current_password" validate:"required,max=256"`
+			Code            string `json:"code" validate:"omitempty,len=6,numeric"`
+			RecoveryCode    string `json:"recovery_code" validate:"omitempty,max=32"`
+		}
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		if e := api.Identity.DisableMFA(c.Context(), actor(c), in.CurrentPassword, in.Code, in.RecoveryCode, rid(c)); e != nil {
+			return e
+		}
+		api.clearCookie(c)
+		return c.SendStatus(204)
+	})
+	auth.Post("/mfa/recovery-codes/regenerate", api.authenticate, func(c fiber.Ctx) error {
+		var in struct {
+			CurrentPassword string `json:"current_password" validate:"required,max=256"`
+			Code            string `json:"code" validate:"omitempty,len=6,numeric"`
+			RecoveryCode    string `json:"recovery_code" validate:"omitempty,max=32"`
+		}
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		codes, e := api.Identity.RegenerateRecoveryCodes(c.Context(), actor(c), in.CurrentPassword, in.Code, in.RecoveryCode, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"recovery_codes": codes})
 	})
 	staff := app.Group("/api/v1/staff", api.authenticate)
 	staff.Get("/facilities", api.require("facilities.read"), func(c fiber.Ctx) error {
@@ -328,21 +399,31 @@ func (api API) require(permission string) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		a := actor(c)
 		if !a.Can(permission) {
-			tx, e := api.DB.Begin(c.Context())
-			if e != nil {
-				return e
-			}
-			defer tx.Rollback(c.Context())
-			if e = platform.Audit(c.Context(), tx, a.ID, "access.denied", "", "", rid(c), "denied"); e != nil {
-				return e
-			}
-			if e = tx.Commit(c.Context()); e != nil {
+			if e := api.deny(c, a, ""); e != nil {
 				return e
 			}
 			return platform.Forbidden()
 		}
+		// Enforce assurance on staff permission routes; authentication/MFA bootstrap stays available.
+		if api.Config.MFAEnforcePrivileged && a.Privileged && !a.MFAVerified {
+			if e := api.deny(c, a, "mfa_required"); e != nil {
+				return e
+			}
+			return platform.Fail(403, "mfa_required", "This role requires a session verified with a second factor; enroll at /api/v1/auth/mfa/enroll or sign in again")
+		}
 		return c.Next()
 	}
+}
+func (api API) deny(c fiber.Ctx, a identity.Actor, reason string) error {
+	tx, e := api.DB.Begin(c.Context())
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(c.Context())
+	if e = platform.AuditReason(c.Context(), tx, a.ID, "access.denied", "", "", rid(c), "denied", reason); e != nil {
+		return e
+	}
+	return tx.Commit(c.Context())
 }
 func (api API) origin(c fiber.Ctx) error {
 	for _, o := range api.Config.Origins {
@@ -369,9 +450,13 @@ func (api API) login(c fiber.Ctx) error {
 	if e := api.client(c, in.ClientType); e != nil {
 		return e
 	}
-	t, e := api.Identity.Login(c.Context(), in, c.IP(), rid(c))
+	t, challenge, e := api.Identity.Login(c.Context(), in, c.IP(), rid(c))
 	if e != nil {
 		return e
+	}
+	if challenge != nil {
+		// No session exists yet; the client must POST /auth/mfa/verify with this challenge.
+		return c.JSON(challenge)
 	}
 	return api.tokens(c, t, in.ClientType)
 }

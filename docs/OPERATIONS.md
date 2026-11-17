@@ -12,11 +12,11 @@ Use one API per HTTP port; both development setups default to 8080. Native Postg
 
 `.env` is ignored, mode 600 when generated, and excluded from container context. Never commit credentials or patient exports. Example values are placeholders; CI values are isolated synthetic database credentials. Keep `DATABASE_ADMIN_URL` and seed credentials out of runtime deployments. Compose's API/worker environments contain only the restricted application URL. Management bootstrap receives the owner URL only for local provisioning.
 
-Required: `DATABASE_URL`; defaults/config: `APP_ENV`, `HTTP_ADDR`, `ALLOWED_ORIGINS`, `CLINIC_TIMEZONE`. Management adds `DATABASE_ADMIN_URL`, `APP_DB_ROLE`, `APP_DB_PASSWORD`, and development-only `SEED_ADMIN_PASSWORD`/`SEED_RECEPTION_PASSWORD`. PostgreSQL owner and storage credentials are infrastructure settings.
+Required: `DATABASE_URL`; defaults/config: `APP_ENV`, `HTTP_ADDR`, `ALLOWED_ORIGINS`, `CLINIC_TIMEZONE`, `PHI_ENCRYPTION_KEYS`/`PHI_ACTIVE_KEY_ID` (required in production; generate keys with `go run ./cmd/manage new-encryption-key`, keep retired ids in the list until no ciphertext uses them, never store keys with backups), `MFA_ENFORCE_PRIVILEGED` (cannot be false in production). Management adds `DATABASE_ADMIN_URL`, `APP_DB_ROLE`, `APP_DB_PASSWORD`, and development-only `SEED_ADMIN_PASSWORD`/`SEED_RECEPTION_PASSWORD`. PostgreSQL owner and storage credentials are infrastructure settings.
 
 For production preparation use a secrets manager, PostgreSQL TLS with server identity validation, a TLS reverse proxy, HTTPS exact Origin allowlists, private network rules, and database roles without ownership or administration rights. Proxy trust is currently disabled. A shared proxy would collapse backend rate limits to its IP; configure and test trusted proxies and perimeter rate controls before real deployment. Browser/API must be same-site for the Strict refresh cookie.
 
-No production readiness is claimed: MFA, account recovery, consent/patient-relationship policies, clinical/financial safeguards, storage/scanning, security review, load baselines, metrics, centralized alerting, and clinic acceptance are unfinished.
+No production readiness is claimed: account recovery and administrator MFA reset, consent/patient-relationship policies, clinical/financial safeguards, storage/scanning, security review, load baselines, metrics, centralized alerting, and clinic acceptance are unfinished.
 
 ## Health, logs and workers
 
@@ -25,6 +25,10 @@ No production readiness is claimed: MFA, account recovery, consent/patient-relat
 API shutdown handles SIGINT/SIGTERM and drains within ten seconds. Database request contexts and worker work have bounded deadlines; the pool is capped at ten. Size the total pools across replicas against PostgreSQL limits before scaling.
 
 The worker currently accepts **only APP_ENV=development**. It records an event in `development_event_sink`; it does not deliver patient notifications. Leases last 30 seconds with fencing tokens, max five attempts and backoff; exhausted leases are marked failed. Inspect `outbox` for `status='failed'` using authorized operational access. No automatic requeue command is exposed until the failed-job review policy is implemented. Do not change completed events to pending without consumer-specific reconciliation.
+
+## Audit sealing
+
+Run `go run ./cmd/manage audit-seal` on a schedule (every 5 minutes is suggested) with owner-authorized management credentials; the runtime role cannot seal. It briefly waits for audit writers, seals a contiguous age-eligible prefix into an immutable hash chain, and logs the chain head; forward that log line to storage the database owner cannot alter (SIEM, object lock). Run `manage audit-verify` daily and after every restore rehearsal; inspect any non-zero exit to distinguish database/configuration failure from a detected broken seal. Verification covers the sealed prefix and reports the unsealed tail separately.
 
 ## Backups and restoration
 
@@ -48,3 +52,9 @@ Do not overwrite a live clinic with an old backup. Restore into an isolated envi
 Development sequence: backup synthetic database, run migrations with the owner, grant runtime additions if required, start matching application, check readiness, run the synthetic journey, review failed jobs and audit. Use reviewed additive migrations and expand/contract changes for eventual production releases. Roll back the application only when the old binary supports the new schema; current startup requires exact version equality, so coordinate rollback explicitly. Goose Down is destructive development tooling, not an automatic clinic recovery plan.
 
 Container builds are multi-stage/non-root and use version-pinned images. Rebuild and scan base images before release; Go vulnerability scanning does not scan OS packages. Compose config/build and native PostgreSQL tests are separate verification activities; see the evidence in MODULE_STATUS.md. CI is configured but its hosted run has not been observed in this repository.
+
+## Security phase 1 operations
+
+Apply migration 00003 and rerun `manage grant-runtime` before restarting the matching API. Native development setup safely backfills a completely missing keyring; it never replaces existing keys. Keep old key IDs available until a tested re-encryption/recovery procedure permits retirement. Production enforces privileged MFA and requires keys. See SECURITY_PHASE1.md for full MFA and sealed-audit behavior.
+
+Only owner-authorized management credentials may run `manage audit-seal`; the runtime application cannot create seals. Sealing waits for existing audit writers using a short SHARE barrier, takes a contiguous age-eligible prefix, and retries on lock timeout. `manage audit-verify` reports the sealed-prefix result plus unsealed tail count. Configure scheduling and off-host anchor shipping before making database-owner tamper-detection claims; neither is deployed in this repository.

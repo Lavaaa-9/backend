@@ -38,7 +38,9 @@ Outbox claiming uses `FOR UPDATE SKIP LOCKED`, a 30-second lease, a unique fenci
 
 Access credentials are opaque, random 256-bit tokens, not JWTs. Only SHA-256 digests are stored. Algorithm/issuer claim validation does not apply to opaque tokens: credentials are resolved only by this backend's session database, with server-held client type and expiry. Protected requests load current active state, active facility assignments, and permission rows; no role claims are trusted from a client.
 
-Argon2id uses x/crypto, version 19, 64 MiB, three iterations, two lanes, a random 16-byte salt and a 32-byte output. Parsing accepts only this bounded parameter format. Runtime hash parameter configuration/upgrades and MFA remain pending.
+Security migration 00003 adds staff_mfa, mfa_recovery_codes, login_challenges, session assurance, audit reasons/facilities and audit seals. The runtime role cannot write seals; owner-authorized management handles sealing. Services coordinate MFA policy/transactions while mfa_repository.go owns SQL persistence.
+
+Argon2id uses x/crypto, version 19, 64 MiB, three iterations, two lanes, a random 16-byte salt and a 32-byte output. Parsing accepts only this bounded parameter format. Runtime hash parameter configuration/upgrades remain pending. MFA now uses challenge-based login, encrypted TOTP secrets, hashed recovery codes, live session assurance and rate-limited management; see SECURITY_PHASE1.md.
 
 Browser refresh is an HttpOnly, SameSite=Strict path-scoped cookie, Secure outside local development/test. Exact allowed Origin is required for web login, refresh and logout. Mobile auth rejects any Origin and returns refresh in JSON for native secure storage. Browser origins must therefore use the cookie flow. CORS is exact-origin allowlisted. Forwarded IP/proxy headers are not trusted; production reverse-proxy rate-limit design is pending.
 

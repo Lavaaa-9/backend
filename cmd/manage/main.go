@@ -9,6 +9,7 @@ import (
 	"spartial.local/backend/internal/config"
 	"spartial.local/backend/internal/modules/identity"
 	"spartial.local/backend/internal/platform"
+	"spartial.local/backend/internal/security"
 	"time"
 )
 
@@ -35,11 +36,20 @@ func entry() error {
 		return nil
 	}
 	if len(os.Args) != 2 {
-		return fmt.Errorf("usage: manage migrate|grant-runtime|seed|bootstrap-development")
+		return fmt.Errorf("usage: manage migrate|grant-runtime|seed|audit-seal|audit-verify|new-encryption-key|bootstrap-development")
 	}
 	return run(os.Args[1])
 }
 func run(command string) error {
+	if command == "new-encryption-key" {
+		// Prints a fresh key for PHI_ENCRYPTION_KEYS; store it in the secrets manager, never in git.
+		k, e := security.NewKeyMaterial()
+		if e != nil {
+			return e
+		}
+		fmt.Println(k)
+		return nil
+	}
 	if len(os.Args) != 2 {
 		return fmt.Errorf("usage: manage migrate|grant-runtime|seed")
 	}
@@ -79,6 +89,25 @@ func run(command string) error {
 			}
 		}
 		return platform.GrantRuntime(ctx, db, role)
+	case "audit-seal":
+		// Run on a schedule (e.g. every 5 minutes). Ship the printed head off-host (SIEM/WORM).
+		s, e := platform.SealAudit(ctx, db, 5*time.Minute)
+		if e != nil {
+			return e
+		}
+		slog.Info("audit_sealed", "events", s.Count, "last_event_id", s.LastEventID, "chain_hash", s.ChainHash)
+		return nil
+	case "audit-verify":
+		r, e := platform.VerifyAuditChain(ctx, db)
+		if e != nil {
+			return e
+		}
+		if !r.Intact() {
+			slog.Error("audit_chain_broken", "first_broken_seal", *r.BrokenSeal, "seals_checked", r.Seals)
+			return fmt.Errorf("audit chain verification failed at seal %d", *r.BrokenSeal)
+		}
+		slog.Info("audit_chain_intact", "seals", r.Seals, "events", r.Events, "unsealed_events", r.Unsealed)
+		return nil
 	case "seed":
 		if cfg.Env != "development" {
 			return fmt.Errorf("seed is allowed only with APP_ENV=development")

@@ -9,6 +9,8 @@ import (
 )
 
 type Event struct {
+	Reason     *string   `json:"reason"`
+	FacilityID *string   `json:"facility_id"`
 	ID         int64     `json:"id"`
 	ActorID    *string   `json:"actor_id"`
 	Action     string    `json:"action"`

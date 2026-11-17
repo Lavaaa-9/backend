@@ -36,6 +36,10 @@ type fixture struct {
 
 func setup(t *testing.T) *fixture {
 	t.Helper()
+	return setupWith(t, config.Config{Env: "test", Origins: []string{"http://localhost:3000"}})
+}
+func setupWith(t *testing.T, cfg config.Config) *fixture {
+	t.Helper()
 	url := os.Getenv("TEST_DATABASE_URL")
 	if url == "" {
 		t.Skip("TEST_DATABASE_URL is required for real PostgreSQL integration tests")
@@ -94,7 +98,7 @@ func setup(t *testing.T) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	app, e := httpapi.New(config.Config{Env: "test", Origins: []string{"http://localhost:3000"}}, runtime, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app, e := httpapi.New(cfg, runtime, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if e != nil {
 		t.Fatal(e)
 	}

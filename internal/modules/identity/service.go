@@ -13,6 +13,11 @@ import (
 type Service struct {
 	Repo      Repository
 	DummyHash string
+	// Keys encrypts TOTP secrets; nil disables enrollment (503) but never weakens login.
+	Keys   *security.Keyring
+	Issuer string
+	// Now is overridable in tests; production uses time.Now.
+	Now func() time.Time
 }
 type Credentials struct {
 	Email      string `json:"email" validate:"required,email,max=254"`
@@ -41,19 +46,21 @@ type UpdateStaff struct {
 	Version     int      `json:"version" validate:"required,min=1"`
 }
 
-func (s Service) Login(ctx context.Context, in Credentials, ip, request string) (Tokens, error) {
+// Login verifies the password. Staff with a confirmed second factor receive a Challenge and no
+// session; VerifyMFA then issues tokens. Otherwise a password-assurance session is issued.
+func (s Service) Login(ctx context.Context, in Credentials, ip, request string) (Tokens, *Challenge, error) {
 	for _, key := range []string{"ip:" + security.Digest(ip), "email:" + security.Digest(strings.ToLower(in.Email))} {
 		ok, e := s.Repo.Limit(ctx, key)
 		if e != nil {
-			return Tokens{}, e
+			return Tokens{}, nil, e
 		}
 		if !ok {
-			return Tokens{}, platform.Fail(429, "rate_limited", "Too many authentication attempts; retry after 15 minutes")
+			return Tokens{}, nil, platform.Fail(429, "rate_limited", "Too many authentication attempts; retry after 15 minutes")
 		}
 	}
 	u, hash, err := s.Repo.ByEmail(ctx, strings.ToLower(in.Email))
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return Tokens{}, err
+		return Tokens{}, nil, err
 	}
 	if hash == "" {
 		hash = s.DummyHash
@@ -61,10 +68,43 @@ func (s Service) Login(ctx context.Context, in Credentials, ip, request string) 
 	valid := security.VerifyPassword(hash, in.Password)
 	if err != nil || !valid || !u.Active {
 		if e := s.auditDenied(ctx, u.ID, request); e != nil {
-			return Tokens{}, e
+			return Tokens{}, nil, e
 		}
-		return Tokens{}, platform.Unauthorized()
+		return Tokens{}, nil, platform.Unauthorized()
 	}
+	tx, e := s.Repo.DB.Begin(ctx)
+	if e != nil {
+		return Tokens{}, nil, e
+	}
+	defer tx.Rollback(ctx)
+	// Lock the staff row so suspension or a password change cannot race new sessions.
+	current, currentHash, e := userBy(ctx, tx, "s.id=$1::uuid FOR UPDATE", u.ID)
+	if e != nil {
+		return Tokens{}, nil, e
+	}
+	if !current.Active || currentHash != hash {
+		return Tokens{}, nil, platform.Unauthorized()
+	}
+	enrolled, e := mfaEnabled(ctx, tx, u.ID)
+	if e != nil {
+		return Tokens{}, nil, e
+	}
+	if enrolled {
+		c, e := issueChallenge(ctx, tx, current, in.ClientType, request)
+		if e != nil {
+			return Tokens{}, nil, e
+		}
+		return Tokens{}, &c, tx.Commit(ctx)
+	}
+	t, e := s.openSession(ctx, tx, current, in.ClientType, false, request, "")
+	if e != nil {
+		return Tokens{}, nil, e
+	}
+	return t, nil, tx.Commit(ctx)
+}
+
+// openSession creates a session inside the caller's transaction (staff row already locked).
+func (s Service) openSession(ctx context.Context, tx pgx.Tx, u User, client string, mfa bool, request, method string) (Tokens, error) {
 	access, e := security.Token()
 	if e != nil {
 		return Tokens{}, e
@@ -73,31 +113,20 @@ func (s Service) Login(ctx context.Context, in Credentials, ip, request string) 
 	if e != nil {
 		return Tokens{}, e
 	}
-	tx, e := s.Repo.DB.Begin(ctx)
+	sid, e := createSession(ctx, tx, u.ID, client, security.Digest(access), security.Digest(refresh), mfa)
 	if e != nil {
 		return Tokens{}, e
 	}
-	defer tx.Rollback(ctx)
-	// Lock the staff row so suspension or a password change cannot race new sessions.
-	current, currentHash, e := userBy(ctx, tx, "s.id=$1::uuid FOR UPDATE", u.ID)
-	if e != nil {
-		return Tokens{}, e
+	action := "auth.login"
+	if mfa {
+		action = "auth.mfa_verify"
 	}
-	if !current.Active || currentHash != hash {
-		return Tokens{}, platform.Unauthorized()
-	}
-	sid, e := createSession(ctx, tx, u.ID, in.ClientType, security.Digest(access), security.Digest(refresh))
-	if e != nil {
-		return Tokens{}, e
-	}
-	if e = platform.Audit(ctx, tx, u.ID, "auth.login", sid, "", request, "success"); e != nil {
-		return Tokens{}, e
-	}
-	if e = tx.Commit(ctx); e != nil {
+	if e = platform.AuditReason(ctx, tx, u.ID, action, sid, "", request, "success", method); e != nil {
 		return Tokens{}, e
 	}
 	return Tokens{access, "Bearer", 900, u, refresh}, nil
 }
+
 func (s Service) auditDenied(ctx context.Context, id, request string) error {
 	tx, e := s.Repo.DB.Begin(ctx)
 	if e != nil {

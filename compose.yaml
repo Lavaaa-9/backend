@@ -5,6 +5,10 @@ x-environment: &environment
   DATABASE_URL: postgres://spartial_app:${APP_DB_PASSWORD:?run scripts/dev-db.sh or create .env}@postgres:5432/spartial?sslmode=disable
   ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
   CLINIC_TIMEZONE: Africa/Dar_es_Salaam
+  # Optional in development: without keys, MFA enrollment answers 503 mfa_unavailable.
+  PHI_ENCRYPTION_KEYS: ${PHI_ENCRYPTION_KEYS:-}
+  PHI_ACTIVE_KEY_ID: ${PHI_ACTIVE_KEY_ID:-}
+  MFA_ENFORCE_PRIVILEGED: ${MFA_ENFORCE_PRIVILEGED:-false}
 services:
   postgres:
     image: docker.io/library/postgres:18.3-alpine3.23

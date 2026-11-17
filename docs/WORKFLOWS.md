@@ -29,3 +29,7 @@ Registration also creates a durable `patient.registered` outbox event. The devel
 Booking/check-in, encounter queues, triage, draft/sign/amend notes, orders, sample collection/verification/release, diagnostics, prescribing/partial dispensing, charges/invoicing/payments/refunds, patient publication and telemedicine do not have routes yet. Their required lifecycle rules remain in the original specification. Do not use demographic CRUD or outbox completion as evidence those workflows work.
 
 No clinical warning thresholds, consent policy, retention duration, financial-clearance restriction, monetary rounding mode or external-provider contract has been invented. These need explicit approved configuration as their modules are built.
+
+## Confirmed MFA and account recovery
+
+Confirmed staff MFA changes login into a five-minute challenge with no session until TOTP or an unused recovery code is verified. Confirmation upgrades the caller and revokes other sessions. MFA management rechecks active session/account state under locks; confirmation, regeneration and disablement invalidate pending challenges by incrementing the staff version. Regeneration replaces all ten codes and revokes other sessions; disablement revokes all sessions. Reusing a TOTP step is rejected across these commands. Invalid management credentials/factors are rate limited and audited. Full frontend/operational instructions are in SECURITY_PHASE1.md.
