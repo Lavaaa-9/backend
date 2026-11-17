@@ -6,7 +6,7 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/api ./cmd/api && \
     CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/worker ./cmd/worker && \
     CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/manage ./cmd/manage
-FROM docker.io/library/alpine:3.23.8@sha256:469c9ea410b9215eaee7976ba6c0639039b444be8e5d638f7abbada189971eb2
+FROM docker.io/library/alpine:3.24.4@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 RUN addgroup -g 10001 app && adduser -D -H -u 10001 -G app app
 WORKDIR /app
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
