@@ -2,7 +2,8 @@ name: spartial-development
 x-environment: &environment
   APP_ENV: development
   HTTP_ADDR: 0.0.0.0:8080
-  DATABASE_URL: postgres://spartial_app:${APP_DB_PASSWORD:?run scripts/dev-db.sh or create .env}@postgres:5432/spartial?sslmode=disable
+  DATABASE_URL: postgres://spartial_app:${APP_DB_PASSWORD:?run scripts/dev-db.sh or create .env}@postgres:5432/spartial_hms?sslmode=disable
+  DATABASE_WORKER_URL: postgres://spartial_worker:${WORKER_DB_PASSWORD:?run scripts/dev-db.sh or create .env}@postgres:5432/spartial_hms?sslmode=disable
   ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
   CLINIC_TIMEZONE: Africa/Dar_es_Salaam
   CARE_POLICY_ENABLED: ${CARE_POLICY_ENABLED:-true}
@@ -22,13 +23,13 @@ services:
   postgres:
     image: docker.io/library/postgres:18.7-alpine3.23@sha256:60aac580d8dbe3093c097bb1d11f9e62999814d3a1da2c1aaf729c0b7db117f2
     environment:
-      POSTGRES_DB: spartial
+      POSTGRES_DB: spartial_hms
       POSTGRES_USER: spartial_owner
       POSTGRES_PASSWORD: ${PG_OWNER_PASSWORD:?set a generated owner password}
     ports: ["127.0.0.1:55433:5432"]
     volumes: ["postgres:/var/lib/postgresql"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spartial_owner -d spartial"]
+      test: ["CMD-SHELL", "pg_isready -U spartial_owner -d spartial_hms"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -39,11 +40,12 @@ services:
     command: ["bootstrap-development"]
     environment:
       <<: *environment
-      DATABASE_ADMIN_URL: postgres://spartial_owner:${PG_OWNER_PASSWORD}@postgres:5432/spartial?sslmode=disable
+      DATABASE_ADMIN_URL: postgres://spartial_owner:${PG_OWNER_PASSWORD}@postgres:5432/spartial_hms?sslmode=disable
       APP_DB_ROLE: spartial_app
       APP_DB_PASSWORD: ${APP_DB_PASSWORD}
       SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:?set a generated seed password}
       SEED_RECEPTION_PASSWORD: ${SEED_RECEPTION_PASSWORD:?set a generated seed password}
+      SEED_TEST_PASSWORD: ${SEED_TEST_PASSWORD:?set a generated seed password}
     depends_on:
       postgres: {condition: service_healthy}
   api:

@@ -1,0 +1,140 @@
+erDiagram
+    iam_access_review {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    iam_access_review_item {
+        uuid id PK
+        uuid org_id FK
+        uuid review_id FK
+        uuid membership_role_id FK
+    }
+    iam_api_credential {
+        uuid id PK
+        uuid org_id FK
+    }
+    iam_break_glass_access {
+        uuid id PK
+        uuid org_id FK
+        uuid membership_id FK
+        uuid patient_id FK
+    }
+    iam_membership {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    iam_membership_role {
+        uuid id PK
+        uuid org_id FK
+        uuid membership_id FK
+        uuid role_id FK
+        uuid facility_id FK
+    }
+    iam_mfa_factor {
+        uuid id PK
+        text status
+    }
+    iam_mfa_recovery_code {
+        uuid id PK
+    }
+    iam_otp_challenge {
+        uuid id PK
+    }
+    iam_password_credential {
+        uuid user_id PK
+    }
+    iam_password_history {
+        uuid id PK
+    }
+    iam_password_reset {
+        uuid id PK
+    }
+    iam_refresh_token {
+        uuid id PK
+        uuid session_id FK
+        uuid replaced_by_id FK
+    }
+    iam_role {
+        uuid id PK
+        uuid org_id FK
+        uuid parent_role_id FK
+        text status
+    }
+    iam_role_permission {
+        uuid role_id PK
+        text permission_code PK
+    }
+    iam_session {
+        uuid id PK
+        uuid org_id FK
+        uuid membership_id FK
+        uuid patient_id FK
+    }
+    iam_user_account {
+        uuid id PK
+        text status
+    }
+    org_counter {
+        uuid org_id PK
+        text counter_key PK
+        text period_key PK
+    }
+    org_department {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        text status
+    }
+    org_facility {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    org_organization {
+        uuid id PK
+        text status
+    }
+    org_service_point {
+        uuid id PK
+        uuid org_id FK
+        uuid department_id FK
+        text status
+    }
+    org_staff_department {
+        uuid org_id FK
+        uuid membership_id PK
+        uuid department_id PK
+    }
+    org_organization ||--o{ iam_access_review : "org_id"
+    iam_membership_role ||--o{ iam_access_review_item : "membership_role_id"
+    iam_access_review ||--o{ iam_access_review_item : "review_id"
+    org_organization ||--o{ iam_api_credential : "org_id"
+    iam_membership ||--o{ iam_break_glass_access : "membership_id"
+    patient_patient {
+    }
+    patient_patient ||--o{ iam_break_glass_access : "patient_id"
+    org_organization ||--o{ iam_membership : "org_id"
+    org_facility |o--o{ iam_membership_role : "facility_id"
+    iam_membership ||--o{ iam_membership_role : "membership_id"
+    iam_role ||--o{ iam_membership_role : "role_id"
+    iam_refresh_token |o--o{ iam_refresh_token : "replaced_by_id"
+    iam_session ||--o{ iam_refresh_token : "session_id"
+    org_organization |o--o{ iam_role : "org_id"
+    iam_role |o--o{ iam_role : "parent_role_id"
+    ref_permission {
+    }
+    ref_permission ||--o{ iam_role_permission : "permission_code"
+    iam_role ||--o{ iam_role_permission : "role_id"
+    patient_patient {
+    }
+    patient_patient |o--o{ iam_session : "patient_id"
+    org_organization |o--o{ iam_session : "org_id"
+    iam_membership |o--o{ iam_session : "membership_id"
+    org_organization ||--o{ org_counter : "org_id"
+    org_facility ||--o{ org_department : "facility_id"
+    org_organization ||--o{ org_facility : "org_id"
+    org_department ||--o{ org_service_point : "department_id"
+    org_department ||--o{ org_staff_department : "department_id"
+    iam_membership ||--o{ org_staff_department : "membership_id"

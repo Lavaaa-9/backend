@@ -1,0 +1,136 @@
+erDiagram
+    billing_cashier_shift {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid membership_id FK
+        text status
+    }
+    billing_coverage {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        uuid payer_id FK
+        text status
+    }
+    billing_invoice {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid patient_id FK
+        uuid encounter_id FK
+        uuid payer_id FK
+        text status
+    }
+    billing_invoice_line {
+        uuid id PK
+        uuid org_id FK
+        uuid invoice_id FK
+        uuid service_id FK
+        uuid consultation_id FK
+        uuid diag_request_item_id FK
+        uuid dispense_item_id FK
+        uuid procedure_id FK
+    }
+    billing_payer {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    billing_payment {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid patient_id FK
+        uuid payer_id FK
+        text status
+        uuid cashier_shift_id FK
+        uuid received_by_membership_id FK
+    }
+    billing_payment_allocation {
+        uuid id PK
+        uuid org_id FK
+        uuid payment_id FK
+        uuid invoice_id FK
+    }
+    billing_price {
+        uuid id PK
+        uuid org_id FK
+        uuid service_id FK
+        uuid payer_id FK
+    }
+    billing_receipt {
+        uuid id PK
+        uuid org_id FK
+        uuid payment_id FK
+    }
+    billing_refund {
+        uuid id PK
+        uuid org_id FK
+        uuid payment_id FK
+        text status
+    }
+    billing_service_catalog {
+        uuid id PK
+        uuid org_id FK
+        uuid diag_test_id FK
+        uuid drug_id FK
+        text status
+    }
+    org_facility {
+    }
+    org_facility ||--o{ billing_cashier_shift : "facility_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ billing_cashier_shift : "membership_id"
+    patient_patient {
+    }
+    patient_patient ||--o{ billing_coverage : "patient_id"
+    billing_payer ||--o{ billing_coverage : "payer_id"
+    clinical_encounter {
+    }
+    clinical_encounter |o--o{ billing_invoice : "encounter_id,patient_id"
+    org_facility {
+    }
+    org_facility ||--o{ billing_invoice : "facility_id"
+    patient_patient {
+    }
+    patient_patient ||--o{ billing_invoice : "patient_id"
+    billing_payer ||--o{ billing_invoice : "payer_id"
+    clinical_procedure {
+    }
+    clinical_procedure |o--o{ billing_invoice_line : "procedure_id"
+    clinical_consultation {
+    }
+    clinical_consultation |o--o{ billing_invoice_line : "consultation_id"
+    diag_request_item {
+    }
+    diag_request_item |o--o{ billing_invoice_line : "diag_request_item_id"
+    pharmacy_dispense_item {
+    }
+    pharmacy_dispense_item |o--o{ billing_invoice_line : "dispense_item_id"
+    billing_invoice ||--o{ billing_invoice_line : "invoice_id"
+    billing_service_catalog ||--o{ billing_invoice_line : "service_id"
+    billing_cashier_shift |o--o{ billing_payment : "cashier_shift_id"
+    org_facility {
+    }
+    org_facility ||--o{ billing_payment : "facility_id"
+    patient_patient {
+    }
+    patient_patient |o--o{ billing_payment : "patient_id"
+    billing_payer |o--o{ billing_payment : "payer_id"
+    iam_membership {
+    }
+    iam_membership |o--o{ billing_payment : "received_by_membership_id"
+    billing_invoice ||--o{ billing_payment_allocation : "invoice_id"
+    billing_payment ||--o{ billing_payment_allocation : "payment_id"
+    billing_payer |o--o{ billing_price : "payer_id"
+    billing_service_catalog ||--o{ billing_price : "service_id"
+    billing_payment ||--o{ billing_receipt : "payment_id"
+    billing_payment ||--o{ billing_refund : "payment_id"
+    diag_test_catalog {
+    }
+    diag_test_catalog |o--o{ billing_service_catalog : "diag_test_id"
+    pharmacy_drug {
+    }
+    pharmacy_drug |o--o{ billing_service_catalog : "drug_id"

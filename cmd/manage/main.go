@@ -1,4 +1,4 @@
-// manage runs database operations for the Spartial HMS schema (see ../spartial-db).
+// manage runs database operations for the Spartial HMS schema (see db/migrations).
 package main
 
 import (
@@ -68,7 +68,7 @@ func adminURL() (string, error) {
 	return u, nil
 }
 
-// migrate applies ../spartial-db/migrations with its checksummed runner.
+// migrate applies db/migrations with its checksummed runner.
 func migrate() error {
 	raw, e := adminURL()
 	if e != nil {
@@ -79,7 +79,7 @@ func migrate() error {
 		return fmt.Errorf("invalid DATABASE_ADMIN_URL")
 	}
 	pw, _ := u.User.Password()
-	script, e := filepath.Abs("../spartial-db/tools/migrate.sh")
+	script, e := filepath.Abs("db/tools/migrate.sh")
 	if e != nil {
 		return e
 	}

@@ -1,0 +1,145 @@
+erDiagram
+    diag_reference_range {
+        uuid id PK
+        uuid org_id FK
+        uuid component_id FK
+    }
+    diag_request {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid ordered_by_membership_id FK
+        text status
+    }
+    diag_request_item {
+        uuid id PK
+        uuid org_id FK
+        uuid request_id FK
+        uuid patient_id FK
+        uuid test_id FK
+        text status
+    }
+    diag_result {
+        uuid id PK
+        uuid org_id FK
+        uuid request_item_id FK
+        uuid patient_id FK
+        uuid component_id FK
+        uuid attachment_document_id FK
+        text status
+        uuid supersedes_id FK
+    }
+    diag_specimen {
+        uuid id PK
+        uuid org_id FK
+        uuid request_item_id FK
+        uuid patient_id FK
+        text status
+    }
+    diag_test_catalog {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    diag_test_component {
+        uuid id PK
+        uuid org_id FK
+        uuid test_id FK
+        text status
+    }
+    pharmacy_dispense {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid prescription_id FK
+        uuid patient_id FK
+        uuid dispensed_by_membership_id FK
+        text status
+    }
+    pharmacy_dispense_item {
+        uuid id PK
+        uuid org_id FK
+        uuid dispense_id FK
+        uuid prescription_item_id FK
+        uuid batch_id FK
+    }
+    pharmacy_drug {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    pharmacy_prescription {
+        uuid id PK
+        uuid org_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid prescriber_membership_id FK
+        text status
+    }
+    pharmacy_prescription_item {
+        uuid id PK
+        uuid org_id FK
+        uuid prescription_id FK
+        uuid patient_id FK
+        uuid drug_id FK
+        text status
+    }
+    pharmacy_stock_batch {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid drug_id FK
+        text status
+    }
+    pharmacy_stock_movement {
+        uuid id PK
+        uuid org_id FK
+        uuid batch_id FK
+        uuid dispense_item_id FK
+    }
+    diag_test_component ||--o{ diag_reference_range : "component_id"
+    clinical_encounter {
+    }
+    clinical_encounter ||--o{ diag_request : "encounter_id,patient_id"
+    org_facility {
+    }
+    org_facility ||--o{ diag_request : "facility_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ diag_request : "ordered_by_membership_id"
+    diag_request ||--o{ diag_request_item : "request_id,patient_id"
+    diag_test_catalog ||--o{ diag_request_item : "test_id"
+    document_document {
+    }
+    document_document |o--o{ diag_result : "attachment_document_id"
+    diag_test_component ||--o{ diag_result : "component_id"
+    diag_request_item ||--o{ diag_result : "request_item_id,patient_id"
+    diag_result |o--o{ diag_result : "supersedes_id"
+    diag_request_item ||--o{ diag_specimen : "request_item_id,patient_id"
+    diag_test_catalog ||--o{ diag_test_component : "test_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ pharmacy_dispense : "dispensed_by_membership_id"
+    org_facility {
+    }
+    org_facility ||--o{ pharmacy_dispense : "facility_id"
+    pharmacy_prescription ||--o{ pharmacy_dispense : "prescription_id,patient_id"
+    pharmacy_stock_batch ||--o{ pharmacy_dispense_item : "batch_id"
+    pharmacy_dispense ||--o{ pharmacy_dispense_item : "dispense_id"
+    pharmacy_prescription_item ||--o{ pharmacy_dispense_item : "prescription_item_id"
+    clinical_encounter {
+    }
+    clinical_encounter ||--o{ pharmacy_prescription : "encounter_id,patient_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ pharmacy_prescription : "prescriber_membership_id"
+    pharmacy_drug |o--o{ pharmacy_prescription_item : "drug_id"
+    pharmacy_prescription ||--o{ pharmacy_prescription_item : "prescription_id,patient_id"
+    pharmacy_drug ||--o{ pharmacy_stock_batch : "drug_id"
+    org_facility {
+    }
+    org_facility ||--o{ pharmacy_stock_batch : "facility_id"
+    pharmacy_stock_batch ||--o{ pharmacy_stock_movement : "batch_id"
+    pharmacy_dispense_item |o--o{ pharmacy_stock_movement : "dispense_item_id"

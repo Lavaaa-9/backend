@@ -1,0 +1,45 @@
+erDiagram
+    audit_event {
+        bigint id PK
+        timestamp_with_time_zone occurred_at PK
+        uuid org_id
+    }
+    audit_seal {
+        bigint seal_no PK
+    }
+    comms_device {
+        uuid id PK
+    }
+    comms_message {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        bigint outbox_id FK
+        uuid template_id FK
+        text status
+    }
+    comms_notification_template {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    comms_outbox {
+        bigint id PK
+        uuid org_id FK
+        text status
+    }
+    integration_inbound_event {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    integration_provider_config {
+        uuid id PK
+        uuid org_id FK
+        text status
+    }
+    patient_patient {
+    }
+    patient_patient |o--o{ comms_message : "patient_id"
+    comms_notification_template |o--o{ comms_message : "template_id"
+    comms_outbox |o--o{ comms_message : "outbox_id"

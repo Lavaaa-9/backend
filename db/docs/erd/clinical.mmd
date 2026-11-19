@@ -1,0 +1,223 @@
+erDiagram
+    clinical_allergy {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text status
+    }
+    clinical_appointment {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid department_id FK
+        uuid patient_id FK
+        uuid practitioner_membership_id FK
+        text status
+    }
+    clinical_consultation {
+        uuid id PK
+        uuid org_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid practitioner_membership_id FK
+        text status
+        uuid supersedes_id FK
+    }
+    clinical_encounter {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid patient_id FK
+        uuid appointment_id FK
+        text status
+        uuid attending_membership_id FK
+        uuid payer_id FK
+    }
+    clinical_encounter_diagnosis {
+        uuid id PK
+        uuid org_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid consultation_id FK
+        text icd10_code FK
+        text status
+        uuid recorded_by_membership_id FK
+    }
+    clinical_follow_up_plan {
+        uuid id PK
+        uuid org_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid department_id FK
+        uuid practitioner_membership_id FK
+        text status
+        uuid appointment_id FK
+    }
+    clinical_history_entry {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text status
+    }
+    clinical_nursing_observation {
+        uuid id PK
+        uuid org_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid recorded_by_membership_id FK
+        uuid triage_assessment_id FK
+        text status
+    }
+    clinical_problem {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text icd10_code FK
+        text status
+    }
+    clinical_procedure {
+        uuid id PK
+        uuid org_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid consultation_id FK
+        uuid service_id FK
+        text status
+        uuid ordered_by_membership_id FK
+        uuid performed_by_membership_id FK
+    }
+    clinical_queue_ticket {
+        uuid id PK
+        uuid org_id FK
+        uuid facility_id FK
+        uuid department_id FK
+        uuid service_point_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        text status
+        uuid served_by_membership_id FK
+        uuid transferred_to_ticket_id FK
+    }
+    clinical_triage_assessment {
+        uuid id PK
+        uuid org_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid recorded_by_membership_id FK
+        text status
+        uuid supersedes_id FK
+    }
+    telehealth_session {
+        uuid id PK
+        uuid org_id FK
+        uuid appointment_id FK
+        uuid encounter_id FK
+        uuid patient_id FK
+        uuid practitioner_membership_id FK
+        uuid consent_id FK
+        text status
+    }
+    telehealth_session_event {
+        bigint id PK
+        uuid org_id FK
+        uuid session_id FK
+    }
+    patient_patient {
+    }
+    patient_patient ||--o{ clinical_allergy : "patient_id"
+    org_department {
+    }
+    org_department ||--o{ clinical_appointment : "department_id"
+    org_facility {
+    }
+    org_facility ||--o{ clinical_appointment : "facility_id"
+    patient_patient {
+    }
+    patient_patient ||--o{ clinical_appointment : "patient_id"
+    iam_membership {
+    }
+    iam_membership |o--o{ clinical_appointment : "practitioner_membership_id"
+    clinical_encounter ||--o{ clinical_consultation : "encounter_id,patient_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ clinical_consultation : "practitioner_membership_id"
+    clinical_consultation |o--o{ clinical_consultation : "supersedes_id"
+    clinical_appointment |o--o{ clinical_encounter : "appointment_id,patient_id"
+    iam_membership {
+    }
+    iam_membership |o--o{ clinical_encounter : "attending_membership_id"
+    org_facility {
+    }
+    org_facility ||--o{ clinical_encounter : "facility_id"
+    patient_patient {
+    }
+    patient_patient ||--o{ clinical_encounter : "patient_id"
+    billing_payer {
+    }
+    billing_payer |o--o{ clinical_encounter : "payer_id"
+    ref_icd10_code {
+    }
+    ref_icd10_code |o--o{ clinical_encounter_diagnosis : "icd10_code"
+    clinical_consultation |o--o{ clinical_encounter_diagnosis : "consultation_id,patient_id"
+    clinical_encounter ||--o{ clinical_encounter_diagnosis : "encounter_id,patient_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ clinical_encounter_diagnosis : "recorded_by_membership_id"
+    clinical_appointment |o--o{ clinical_follow_up_plan : "appointment_id,patient_id"
+    org_department {
+    }
+    org_department |o--o{ clinical_follow_up_plan : "department_id"
+    clinical_encounter ||--o{ clinical_follow_up_plan : "encounter_id,patient_id"
+    iam_membership {
+    }
+    iam_membership |o--o{ clinical_follow_up_plan : "practitioner_membership_id"
+    patient_patient {
+    }
+    patient_patient ||--o{ clinical_history_entry : "patient_id"
+    clinical_encounter ||--o{ clinical_nursing_observation : "encounter_id,patient_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ clinical_nursing_observation : "recorded_by_membership_id"
+    clinical_triage_assessment |o--o{ clinical_nursing_observation : "triage_assessment_id"
+    ref_icd10_code {
+    }
+    ref_icd10_code |o--o{ clinical_problem : "icd10_code"
+    patient_patient {
+    }
+    patient_patient ||--o{ clinical_problem : "patient_id"
+    clinical_consultation |o--o{ clinical_procedure : "consultation_id,patient_id"
+    clinical_encounter ||--o{ clinical_procedure : "encounter_id,patient_id"
+    iam_membership {
+    }
+    iam_membership |o--o{ clinical_procedure : "ordered_by_membership_id"
+    billing_service_catalog {
+    }
+    billing_service_catalog |o--o{ clinical_procedure : "service_id"
+    org_department {
+    }
+    org_department ||--o{ clinical_queue_ticket : "department_id"
+    clinical_encounter ||--o{ clinical_queue_ticket : "encounter_id,patient_id"
+    org_facility {
+    }
+    org_facility ||--o{ clinical_queue_ticket : "facility_id"
+    iam_membership {
+    }
+    iam_membership |o--o{ clinical_queue_ticket : "served_by_membership_id"
+    org_service_point {
+    }
+    org_service_point |o--o{ clinical_queue_ticket : "service_point_id"
+    clinical_queue_ticket |o--o{ clinical_queue_ticket : "transferred_to_ticket_id"
+    clinical_encounter ||--o{ clinical_triage_assessment : "encounter_id,patient_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ clinical_triage_assessment : "recorded_by_membership_id"
+    clinical_triage_assessment |o--o{ clinical_triage_assessment : "supersedes_id"
+    clinical_appointment ||--o{ telehealth_session : "appointment_id,patient_id"
+    patient_consent {
+    }
+    patient_consent ||--o{ telehealth_session : "consent_id"
+    clinical_encounter |o--o{ telehealth_session : "encounter_id,patient_id"
+    iam_membership {
+    }
+    iam_membership ||--o{ telehealth_session : "practitioner_membership_id"
+    telehealth_session ||--o{ telehealth_session_event : "session_id"

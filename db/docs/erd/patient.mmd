@@ -1,0 +1,111 @@
+erDiagram
+    document_document {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        uuid encounter_id FK
+        text status
+    }
+    gov_data_category {
+        text code PK
+    }
+    gov_legal_hold {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+    }
+    gov_privacy_request {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text status
+        uuid export_document_id FK
+    }
+    patient_consent {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text status
+        uuid witness_membership_id FK
+        uuid document_id FK
+    }
+    patient_contact_point {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text status
+    }
+    patient_duplicate_review {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id_a FK
+        uuid patient_id_b FK
+        text status
+    }
+    patient_identifier {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text status
+    }
+    patient_merge_event {
+        uuid id PK
+        uuid org_id FK
+        uuid survivor_patient_id FK
+        uuid merged_patient_id FK
+        uuid duplicate_review_id FK
+    }
+    patient_next_of_kin {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text status
+    }
+    patient_patient {
+        uuid id PK
+        uuid org_id FK
+        uuid registered_facility_id FK
+        text status
+        uuid merged_into_patient_id FK
+    }
+    patient_portal_account {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        text status
+    }
+    patient_verification {
+        uuid id PK
+        uuid org_id FK
+        uuid patient_id FK
+        uuid encounter_id FK
+        uuid identifier_id FK
+    }
+    clinical_encounter {
+    }
+    clinical_encounter |o--o{ document_document : "encounter_id,patient_id"
+    patient_patient ||--o{ document_document : "patient_id"
+    patient_patient |o--o{ gov_legal_hold : "patient_id"
+    document_document |o--o{ gov_privacy_request : "export_document_id"
+    patient_patient ||--o{ gov_privacy_request : "patient_id"
+    patient_patient ||--o{ patient_consent : "patient_id"
+    iam_membership {
+    }
+    iam_membership |o--o{ patient_consent : "witness_membership_id"
+    document_document |o--o{ patient_consent : "document_id"
+    patient_patient ||--o{ patient_contact_point : "patient_id"
+    patient_patient ||--o{ patient_duplicate_review : "patient_id_a"
+    patient_patient ||--o{ patient_identifier : "patient_id"
+    patient_duplicate_review |o--o{ patient_merge_event : "duplicate_review_id"
+    patient_patient ||--o{ patient_merge_event : "merged_patient_id"
+    patient_patient ||--o{ patient_next_of_kin : "patient_id"
+    patient_patient |o--o{ patient_patient : "merged_into_patient_id"
+    org_facility {
+    }
+    org_facility ||--o{ patient_patient : "registered_facility_id"
+    patient_patient ||--o{ patient_portal_account : "patient_id"
+    clinical_encounter {
+    }
+    clinical_encounter |o--o{ patient_verification : "encounter_id,patient_id"
+    patient_identifier |o--o{ patient_verification : "identifier_id"
+    patient_patient ||--o{ patient_verification : "patient_id"
