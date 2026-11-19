@@ -10,9 +10,6 @@ import (
 	"spartial.local/backend/internal/security"
 )
 
-// Challenge-based second-factor authentication; no regulatory certification is implied.
-// Lock order everywhere: staff row, then challenge/session, then staff_mfa, then recovery codes.
-
 const (
 	challengeTTL      = 5 * time.Minute
 	maxChallengeTries = 5
@@ -35,7 +32,7 @@ type Enrollment struct {
 	ProvisioningURI string `json:"provisioning_uri"`
 }
 
-func mfaAAD(staffID string) []byte { return []byte("staff_mfa:" + staffID) }
+func mfaAAD(userID string) []byte { return []byte("iam_mfa_factor:" + userID) }
 
 func (s Service) now() time.Time {
 	if s.Now != nil {
@@ -43,6 +40,7 @@ func (s Service) now() time.Time {
 	}
 	return time.Now()
 }
+
 func (s Service) keys() (*security.Keyring, error) {
 	if s.Keys == nil {
 		return nil, platform.Fail(503, "mfa_unavailable", "Second-factor authentication is not configured on this server")
@@ -50,310 +48,191 @@ func (s Service) keys() (*security.Keyring, error) {
 	return s.Keys, nil
 }
 
-// issueChallenge is called inside Login's transaction after the password was verified.
-func issueChallenge(ctx context.Context, tx pgx.Tx, u User, client, request, label string) (Challenge, error) {
+func (s Service) issueChallenge(ctx context.Context, uid string, userVersion int, clientType, label, ip, ua string) (Challenge, error) {
 	token, e := security.Token()
 	if e != nil {
 		return Challenge{}, e
 	}
-	id, e := insertChallenge(ctx, tx, security.Digest(token), u.ID, u.Version, client, challengeTTL, label)
+	tx, e := s.DB.Begin(ctx)
 	if e != nil {
 		return Challenge{}, e
 	}
-	if e = platform.Audit(ctx, tx, u.ID, "auth.mfa_challenge", id, "", request, "success"); e != nil {
+	defer tx.Rollback(ctx)
+	var org string
+	_ = tx.QueryRow(ctx, `SELECT org_id::text FROM iam.memberships_for_login($1::uuid) ORDER BY org_name LIMIT 1`, uid).Scan(&org)
+	var cid string
+	e = tx.QueryRow(ctx, `INSERT INTO iam.mfa_challenge(user_id,token_hash,user_version,client_type,device_label,expires_at)
+ VALUES($1::uuid,decode($2,'hex'),$3,$4,NULLIF($5,''),now()+$6::interval) RETURNING id::text`,
+		uid, security.Digest(token), userVersion, clientType, label, "5 minutes").Scan(&cid)
+	if e != nil {
 		return Challenge{}, e
 	}
-	return Challenge{true, token, int(challengeTTL.Seconds())}, nil
+	if e = platform.AuditPreAuth(ctx, tx, "auth.mfa_challenge", "success", cid, org, uid, "", ip, ua); e != nil {
+		return Challenge{}, e
+	}
+	if e = tx.Commit(ctx); e != nil {
+		return Challenge{}, e
+	}
+	return Challenge{MFARequired: true, ChallengeToken: token, ExpiresIn: int(challengeTTL.Seconds())}, nil
 }
 
 // VerifyMFA completes a login challenge with a TOTP code or a single-use recovery code.
-func (s Service) VerifyMFA(ctx context.Context, in MFAVerify, ip, request string) (Tokens, error) {
+func (s Service) VerifyMFA(ctx context.Context, in MFAVerify, ip, ua, request string) (Tokens, error) {
 	if (in.Code == "") == (in.RecoveryCode == "") {
-		return Tokens{}, platform.Fail(422, "validation", "Provide exactly one of code or recovery_code")
+		return Tokens{}, platform.Fail(422, "validation", "Provide either a 6-digit code or a recovery_code")
 	}
-	ok, e := s.Repo.Limit(ctx, "mfa-ip:"+security.Digest(ip))
+	keys, e := s.keys()
 	if e != nil {
 		return Tokens{}, e
 	}
-	if !ok {
-		return Tokens{}, platform.Fail(429, "rate_limited", "Too many authentication attempts; retry after 15 minutes")
+	tx, e := s.DB.Begin(ctx)
+	if e != nil {
+		return Tokens{}, e
 	}
-	hash := security.Digest(in.ChallengeToken)
-	staffID, e := challengeStaff(ctx, s.Repo.DB, hash, in.ClientType)
+	defer tx.Rollback(ctx)
+
+	var cid, uid, chClient, label string
+	var chVersion, attempts int
+	var expires time.Time
+	var consumed *time.Time
+	e = tx.QueryRow(ctx, `SELECT id::text,user_id::text,user_version,client_type,coalesce(device_label,''),attempts,expires_at,consumed_at
+ FROM iam.mfa_challenge WHERE token_hash=decode($1,'hex') FOR UPDATE`, security.Digest(in.ChallengeToken)).
+		Scan(&cid, &uid, &chVersion, &chClient, &label, &attempts, &expires, &consumed)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return Tokens{}, platform.Unauthorized()
 	}
 	if e != nil {
 		return Tokens{}, e
 	}
-	if ok, e = s.Repo.Limit(ctx, "mfa-staff:"+staffID); e != nil {
-		return Tokens{}, e
-	} else if !ok {
-		return Tokens{}, platform.Fail(429, "rate_limited", "Too many authentication attempts; retry after 15 minutes")
-	}
-	tx, e := s.Repo.DB.Begin(ctx)
-	if e != nil {
-		return Tokens{}, e
-	}
-	defer tx.Rollback(ctx)
-	u, _, e := userBy(ctx, tx, "s.id=$1::uuid FOR UPDATE", staffID)
-	if e != nil {
-		return Tokens{}, e
-	}
-	challenge, e := lockChallenge(ctx, tx, hash)
-	if e != nil {
-		return Tokens{}, e
-	}
-
-	reject := func(reason string, countAttempt bool) (Tokens, error) {
-		if countAttempt {
-			if e := countChallengeAttempt(ctx, tx, challenge.ID); e != nil {
-				return Tokens{}, e
-			}
-		}
-		if e := platform.AuditReason(ctx, tx, u.ID, "auth.mfa_verify", challenge.ID, "", request, "denied", reason); e != nil {
-			return Tokens{}, e
-		}
-		if e := tx.Commit(ctx); e != nil {
-			return Tokens{}, e
-		}
+	now := s.now()
+	if consumed != nil || chClient != in.ClientType || !expires.After(now) || attempts >= maxChallengeTries {
 		return Tokens{}, platform.Unauthorized()
 	}
-	switch {
-	case challenge.Consumed != nil:
-		return reject("challenge_reused", false)
-	case !challenge.Expires.After(s.now()):
-		return reject("challenge_expired", false)
-	case challenge.Attempts >= maxChallengeTries:
-		return reject("challenge_exhausted", false)
-	case !u.Active || u.Version != challenge.Version:
-		return reject("account_changed", false)
+
+	var status string
+	var version, failed int
+	var locked *time.Time
+	e = tx.QueryRow(ctx, `SELECT status,row_version,failed_login_count,locked_until FROM iam.user_account WHERE id=$1::uuid FOR UPDATE`, uid).
+		Scan(&status, &version, &failed, &locked)
+	if e != nil {
+		return Tokens{}, e
 	}
-	method, ok, e := s.checkFactor(ctx, tx, u.ID, in.Code, in.RecoveryCode)
+	if !rateLimitDisabled() && locked != nil && locked.After(now) {
+		return Tokens{}, platform.Fail(429, "rate_limited", "Account temporarily locked after repeated failures; retry later")
+	}
+	if status != "active" || version != chVersion {
+		return Tokens{}, platform.Unauthorized()
+	}
+
+	var org string
+	_ = tx.QueryRow(ctx, `SELECT org_id::text FROM iam.memberships_for_login($1::uuid) ORDER BY org_name LIMIT 1`, uid).Scan(&org)
+
+	ok, method, e := s.verifySecondFactor(ctx, tx, keys, uid, in.Code, in.RecoveryCode, now)
 	if e != nil {
 		return Tokens{}, e
 	}
 	if !ok {
-		return reject("invalid_"+method, true)
+		lock := ""
+		if !rateLimitDisabled() && failed+1 >= 5 {
+			lock = "15 minutes"
+		}
+		_, _ = tx.Exec(ctx, `UPDATE iam.user_account SET failed_login_count=failed_login_count+1,locked_until=CASE WHEN $2<>'' THEN now()+$2::interval ELSE locked_until END WHERE id=$1::uuid`, uid, lock)
+		if _, e = tx.Exec(ctx, `UPDATE iam.mfa_challenge SET attempts=attempts+1,user_version=user_version+1,consumed_at=CASE WHEN attempts+1>=$2::smallint THEN now() ELSE consumed_at END WHERE id=$1::uuid`, cid, maxChallengeTries); e != nil {
+			return Tokens{}, e
+		}
+		_ = platform.AuditPreAuth(ctx, tx, "auth.mfa_verify", "denied", cid, org, uid, "invalid_code", ip, ua)
+		_ = tx.Commit(ctx)
+		return Tokens{}, platform.Unauthorized()
 	}
-	if e = consumeChallenge(ctx, tx, challenge.ID); e != nil {
+
+	if _, e = tx.Exec(ctx, `UPDATE iam.mfa_challenge SET consumed_at=now() WHERE id=$1::uuid`, cid); e != nil {
 		return Tokens{}, e
 	}
-	t, e := s.openSession(ctx, tx, u, in.ClientType, true, request, method, challenge.DeviceLabel)
+	access, e := security.Token()
 	if e != nil {
+		return Tokens{}, e
+	}
+	refresh, e := security.Token()
+	if e != nil {
+		return Tokens{}, e
+	}
+	t, e := s.createSessionTx(ctx, tx, uid, in.ClientType, "password_mfa", true, access, refresh, label, ip, ua, request)
+	if e != nil {
+		return Tokens{}, e
+	}
+	if e = platform.AuditPreAuth(ctx, tx, "auth.mfa_verify", "success", cid, org, uid, method, ip, ua); e != nil {
 		return Tokens{}, e
 	}
 	return t, tx.Commit(ctx)
 }
 
-// checkFactor verifies a TOTP code (advancing the replay step) or consumes a recovery code.
-// The staff row must already be locked by the caller.
-func (s Service) checkFactor(ctx context.Context, tx pgx.Tx, staffID, code, recovery string) (string, bool, error) {
-	if recovery != "" {
-		on, e := mfaEnabled(ctx, tx, staffID)
+func (s Service) verifySecondFactor(ctx context.Context, tx pgx.Tx, keys *security.Keyring, uid, code, recovery string, now time.Time) (bool, string, error) {
+	if code != "" {
+		var fid string
+		var blob []byte
+		var lastStep *int64
+		e := tx.QueryRow(ctx, `SELECT id::text,secret_ciphertext,last_used_step FROM iam.mfa_factor WHERE user_id=$1::uuid AND factor_type='totp' AND status='active' FOR UPDATE`, uid).
+			Scan(&fid, &blob, &lastStep)
+		if errors.Is(e, pgx.ErrNoRows) {
+			return false, "", nil
+		}
 		if e != nil {
-			return "recovery_code", false, e
+			return false, "", e
 		}
-		if !on {
-			return "recovery_code", false, nil
+		secret, e := keys.Open(blob, mfaAAD(uid))
+		if e != nil {
+			return false, "", e
 		}
-		norm := security.NormalizeRecoveryCode(recovery)
-		if norm == "" {
-			return "recovery_code", false, nil
+		prev := int64(0)
+		if lastStep != nil {
+			prev = *lastStep
 		}
-		used, e := consumeRecoveryCode(ctx, tx, staffID, security.Digest(norm))
-		return "recovery_code", used && e == nil, e
+		step, ok := security.VerifyTOTP(secret, code, now, prev)
+		if !ok {
+			return false, "", nil
+		}
+		if _, e = tx.Exec(ctx, `UPDATE iam.mfa_factor SET last_used_step=$2,last_used_at=now() WHERE id=$1::uuid`, fid, step); e != nil {
+			return false, "", e
+		}
+		return true, "totp", nil
 	}
-	keys, e := s.keys()
+	norm := security.NormalizeRecoveryCode(recovery)
+	if norm == "" {
+		return false, "", nil
+	}
+	tag, e := tx.Exec(ctx, `UPDATE iam.mfa_recovery_code SET used_at=now() WHERE user_id=$1::uuid AND code_hash=decode($2,'hex') AND used_at IS NULL`, uid, security.Digest(norm))
 	if e != nil {
-		return "totp", false, e
+		return false, "", e
 	}
-	blob, last, e := confirmedMFASecret(ctx, tx, staffID)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return "totp", false, nil
+	if tag.RowsAffected() != 1 {
+		return false, "", nil
 	}
-	if e != nil {
-		return "totp", false, e
-	}
-	secret, e := keys.Open(blob, mfaAAD(staffID))
-	if e != nil {
-		// A key-configuration fault must never look like a wrong code to the user or the audit.
-		return "totp", false, platform.Fail(503, "mfa_unavailable", "Second-factor secret could not be decrypted; check key configuration")
-	}
-	step, ok := security.VerifyTOTP(secret, code, s.now(), last)
-	if !ok {
-		return "totp", false, nil
-	}
-	e = advanceMFAStep(ctx, tx, staffID, step)
-	return "totp", e == nil, e
+	return true, "recovery_code", nil
 }
 
-// StartEnrollment creates (or replaces) an unconfirmed TOTP secret after password re-authentication.
-func (s Service) StartEnrollment(ctx context.Context, a Actor, password, request string) (Enrollment, error) {
-	if e := s.limitMFAManagement(ctx, a.ID); e != nil {
-		return Enrollment{}, e
+func verifyCurrentPassword(ctx context.Context, tx pgx.Tx, uid, current string) error {
+	var hash string
+	if e := tx.QueryRow(ctx, `SELECT password_hash FROM iam.password_credential WHERE user_id=$1::uuid FOR UPDATE`, uid).Scan(&hash); e != nil {
+		return e
 	}
-	keys, e := s.keys()
-	if e != nil {
-		return Enrollment{}, e
+	if !security.VerifyPassword(hash, current) {
+		return platform.Unauthorized()
 	}
-	tx, e := s.Repo.DB.Begin(ctx)
-	if e != nil {
-		return Enrollment{}, e
-	}
-	defer tx.Rollback(ctx)
-	u, hash, e := lockMFAActor(ctx, tx, a)
-	if e != nil {
-		return Enrollment{}, e
-	}
-	if !security.VerifyPassword(hash, password) {
-		return Enrollment{}, rejectMFAManagement(ctx, tx, u.ID, "auth.mfa_enroll_start", request, "reauthentication_failed", platform.Unauthorized())
-	}
-	if on, e := mfaEnabled(ctx, tx, u.ID); e != nil {
-		return Enrollment{}, e
-	} else if on {
-		return Enrollment{}, platform.Fail(409, "mfa_already_enabled", "Second factor is already enabled; disable it first to re-enroll")
-	}
-	secret, e := security.NewTOTPSecret()
-	if e != nil {
-		return Enrollment{}, e
-	}
-	blob, e := keys.Seal(secret, mfaAAD(u.ID))
-	if e != nil {
-		return Enrollment{}, e
-	}
-	if e = savePendingMFA(ctx, tx, u.ID, blob); e != nil {
-		return Enrollment{}, e
-	}
-	if e = platform.Audit(ctx, tx, u.ID, "auth.mfa_enroll_start", u.ID, "", request, "success"); e != nil {
-		return Enrollment{}, e
-	}
-	if e = tx.Commit(ctx); e != nil {
-		return Enrollment{}, e
-	}
-	issuer := s.Issuer
-	if issuer == "" {
-		issuer = "Spartial Polyclinic"
-	}
-	return Enrollment{security.EncodeTOTPSecret(secret), security.ProvisioningURI(issuer, u.Email, secret)}, nil
+	return nil
 }
 
-// ConfirmEnrollment proves possession of the new secret, issues recovery codes once,
-// upgrades the current session and revokes every other session.
-func (s Service) ConfirmEnrollment(ctx context.Context, a Actor, code, request string) ([]string, error) {
-	if e := s.limitMFAManagement(ctx, a.ID); e != nil {
-		return nil, e
-	}
-	keys, e := s.keys()
-	if e != nil {
-		return nil, e
-	}
-	tx, e := s.Repo.DB.Begin(ctx)
-	if e != nil {
-		return nil, e
-	}
-	defer tx.Rollback(ctx)
-	if _, _, e = lockMFAActor(ctx, tx, a); e != nil {
-		return nil, e
-	}
-	blob, e := pendingMFASecret(ctx, tx, a.ID)
-	if errors.Is(e, pgx.ErrNoRows) {
-		return nil, platform.Fail(409, "mfa_not_pending", "No unexpired pending second-factor enrollment")
-	}
-	if e != nil {
-		return nil, e
-	}
-	secret, e := keys.Open(blob, mfaAAD(a.ID))
-	if e != nil {
-		return nil, platform.Fail(503, "mfa_unavailable", "Second-factor secret could not be decrypted; check key configuration")
-	}
-	step, ok := security.VerifyTOTP(secret, code, s.now(), 0)
-	if !ok {
-		return nil, rejectMFAManagement(ctx, tx, a.ID, "auth.mfa_confirm", request, "invalid_totp", platform.Fail(422, "invalid_mfa_code", "The code is not valid for this enrollment"))
-	}
-	if e = confirmMFA(ctx, tx, a.ID, step); e != nil {
-		return nil, e
-	}
-	if e = bumpSecurityVersion(ctx, tx, a.ID); e != nil {
-		return nil, e
-	}
-	codes, e := replaceRecoveryCodes(ctx, tx, a.ID)
-	if e != nil {
-		return nil, e
-	}
-	if e = revokeOtherSessions(ctx, tx, a.ID, a.SessionID); e != nil {
-		return nil, e
-	}
-	if e = markSessionMFA(ctx, tx, a.ID, a.SessionID); e != nil {
-		return nil, e
-	}
-	if e = platform.Audit(ctx, tx, a.ID, "auth.mfa_enabled", a.ID, "", request, "success"); e != nil {
-		return nil, e
-	}
-	return codes, tx.Commit(ctx)
-}
-
-// DisableMFA requires the password and a current factor, then revokes every session.
-func (s Service) DisableMFA(ctx context.Context, a Actor, password, code, recovery, request string) error {
-	if e := s.limitMFAManagement(ctx, a.ID); e != nil {
-		return e
-	}
-	if (code == "") == (recovery == "") {
-		return platform.Fail(422, "validation", "Provide exactly one of code or recovery_code")
-	}
-	tx, e := s.Repo.DB.Begin(ctx)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback(ctx)
-	_, hash, e := lockMFAActor(ctx, tx, a)
-	if e != nil {
-		return e
-	}
-	if !security.VerifyPassword(hash, password) {
-		return rejectMFAManagement(ctx, tx, a.ID, "auth.mfa_disabled", request, "reauthentication_failed", platform.Unauthorized())
-	}
-	if on, e := mfaEnabled(ctx, tx, a.ID); e != nil {
-		return e
-	} else if !on {
-		return platform.Fail(409, "mfa_not_enabled", "Second factor is not enabled")
-	}
-	method, ok, e := s.checkFactor(ctx, tx, a.ID, code, recovery)
-	if e != nil {
-		return e
-	}
-	if !ok {
-		return rejectMFAManagement(ctx, tx, a.ID, "auth.mfa_disabled", request, "invalid_"+method, platform.Fail(422, "invalid_mfa_code", "The second-factor code is not valid"))
-	}
-	if e = clearRecoveryCodes(ctx, tx, a.ID); e != nil {
-		return e
-	}
-	if e = deleteMFA(ctx, tx, a.ID); e != nil {
-		return e
-	}
-	if e = bumpSecurityVersion(ctx, tx, a.ID); e != nil {
-		return e
-	}
-	if e = revokeAllSessions(ctx, tx, a.ID); e != nil {
-		return e
-	}
-	if e = platform.AuditReason(ctx, tx, a.ID, "auth.mfa_disabled", a.ID, "", request, "success", method); e != nil {
-		return e
-	}
-	return tx.Commit(ctx)
-}
-
-func replaceRecoveryCodes(ctx context.Context, tx pgx.Tx, staffID string) ([]string, error) {
-	if e := clearRecoveryCodes(ctx, tx, staffID); e != nil {
+func replaceRecoveryCodes(ctx context.Context, tx pgx.Tx, uid string) ([]string, error) {
+	if _, e := tx.Exec(ctx, `DELETE FROM iam.mfa_recovery_code WHERE user_id=$1::uuid`, uid); e != nil {
 		return nil, e
 	}
 	codes := make([]string, 0, recoveryCodeCount)
-	for len(codes) < recoveryCodeCount {
+	for i := 0; i < recoveryCodeCount; i++ {
 		c, e := security.NewRecoveryCode()
 		if e != nil {
 			return nil, e
 		}
-		if e = insertRecoveryCode(ctx, tx, staffID, security.Digest(security.NormalizeRecoveryCode(c))); e != nil {
+		norm := security.NormalizeRecoveryCode(c)
+		if _, e = tx.Exec(ctx, `INSERT INTO iam.mfa_recovery_code(user_id,code_hash) VALUES($1::uuid,decode($2,'hex'))`, uid, security.Digest(norm)); e != nil {
 			return nil, e
 		}
 		codes = append(codes, c)
@@ -361,87 +240,172 @@ func replaceRecoveryCodes(ctx context.Context, tx pgx.Tx, staffID string) ([]str
 	return codes, nil
 }
 
-// lockMFAActor rechecks the live account and calling session inside the mutation transaction.
-func lockMFAActor(ctx context.Context, tx pgx.Tx, a Actor) (User, string, error) {
-	u, hash, e := userBy(ctx, tx, "s.id=$1::uuid FOR UPDATE", a.ID)
+// StartEnrollment creates a pending TOTP factor for the authenticated user.
+func (s Service) StartEnrollment(ctx context.Context, a Actor, currentPassword, request string) (Enrollment, error) {
+	keys, e := s.keys()
 	if e != nil {
-		return User{}, "", e
+		return Enrollment{}, e
 	}
-	_, e = lockLiveSession(ctx, tx, a.ID, a.SessionID)
-	if errors.Is(e, pgx.ErrNoRows) || !u.Active {
-		return User{}, "", platform.Unauthorized()
-	}
+	tx, _, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
 	if e != nil {
-		return User{}, "", e
+		return Enrollment{}, e
 	}
-	return u, hash, nil
-}
-func (s Service) limitMFAManagement(ctx context.Context, id string) error {
-	ok, e := s.Repo.Limit(ctx, "mfa-manage:"+id)
+	defer tx.Rollback(ctx)
+	if e = verifyCurrentPassword(ctx, tx, a.ID, currentPassword); e != nil {
+		return Enrollment{}, e
+	}
+	var active bool
+	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM iam.mfa_factor WHERE user_id=$1::uuid AND factor_type='totp' AND status='active')`, a.ID).Scan(&active); e != nil {
+		return Enrollment{}, e
+	}
+	if active {
+		return Enrollment{}, platform.Fail(409, "mfa_already_enabled", "Second-factor authentication is already enabled")
+	}
+	if _, e = tx.Exec(ctx, `UPDATE iam.mfa_factor SET status='revoked' WHERE user_id=$1::uuid AND factor_type='totp' AND status='pending'`, a.ID); e != nil {
+		return Enrollment{}, e
+	}
+	secret, e := security.NewTOTPSecret()
 	if e != nil {
-		return e
+		return Enrollment{}, e
 	}
-	if !ok {
-		return platform.Fail(429, "rate_limited", "Too many second-factor management attempts; retry after 15 minutes")
+	blob, e := keys.Seal(secret, mfaAAD(a.ID))
+	if e != nil {
+		return Enrollment{}, e
 	}
-	return nil
-}
-func rejectMFAManagement(ctx context.Context, tx pgx.Tx, id, action, request, reason string, err error) error {
-	if e := platform.AuditReason(ctx, tx, id, action, id, "", request, "denied", reason); e != nil {
-		return e
+	if _, e = tx.Exec(ctx, `INSERT INTO iam.mfa_factor(user_id,factor_type,label,secret_ciphertext,key_ref,status) VALUES($1::uuid,'totp','default',$2,$3,'pending')`,
+		a.ID, blob, keys.ActiveKeyID()); e != nil {
+		return Enrollment{}, e
 	}
-	if e := tx.Commit(ctx); e != nil {
-		return e
+	if e = platform.Audit(ctx, tx, "auth.mfa_enroll_start", "authentication", "success", "user", a.ID, "", ""); e != nil {
+		return Enrollment{}, e
 	}
-	return err
+	if e = tx.Commit(ctx); e != nil {
+		return Enrollment{}, e
+	}
+	return Enrollment{
+		Secret:          security.EncodeTOTPSecret(secret),
+		ProvisioningURI: security.ProvisioningURI("Spartial", a.Email, secret),
+	}, nil
 }
 
-// RegenerateRecoveryCodes replaces the entire set after password and second-factor reauthentication.
-// Other sessions are revoked, and pending login challenges are invalidated by the version bump.
-func (s Service) RegenerateRecoveryCodes(ctx context.Context, a Actor, password, code, recovery, request string) ([]string, error) {
-	if (code == "") == (recovery == "") {
-		return nil, platform.Fail(422, "validation", "Provide exactly one of code or recovery_code")
-	}
-	if e := s.limitMFAManagement(ctx, a.ID); e != nil {
+// ConfirmEnrollment verifies the first TOTP code, activates MFA, marks the current session verified, and returns recovery codes once.
+func (s Service) ConfirmEnrollment(ctx context.Context, a Actor, code, request string) ([]string, error) {
+	keys, e := s.keys()
+	if e != nil {
 		return nil, e
 	}
-	tx, e := s.Repo.DB.Begin(ctx)
+	tx, _, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
 	if e != nil {
 		return nil, e
 	}
 	defer tx.Rollback(ctx)
-	u, hash, e := lockMFAActor(ctx, tx, a)
+	var fid string
+	var blob []byte
+	e = tx.QueryRow(ctx, `SELECT id::text,secret_ciphertext FROM iam.mfa_factor WHERE user_id=$1::uuid AND factor_type='totp' AND status='pending' FOR UPDATE`, a.ID).Scan(&fid, &blob)
+	if errors.Is(e, pgx.ErrNoRows) {
+		return nil, platform.Fail(409, "mfa_not_pending", "Start MFA enrollment before confirming")
+	}
 	if e != nil {
 		return nil, e
 	}
-	if !security.VerifyPassword(hash, password) {
-		return nil, rejectMFAManagement(ctx, tx, u.ID, "auth.mfa_recovery_regenerate", request, "reauthentication_failed", platform.Unauthorized())
-	}
-	on, e := mfaEnabled(ctx, tx, u.ID)
+	secret, e := keys.Open(blob, mfaAAD(a.ID))
 	if e != nil {
 		return nil, e
 	}
-	if !on {
-		return nil, platform.Fail(409, "mfa_not_enabled", "Second factor is not enabled")
+	step, ok := security.VerifyTOTP(secret, code, s.now(), 0)
+	if !ok {
+		return nil, platform.Fail(422, "invalid_code", "Invalid verification code")
 	}
-	method, ok, e := s.checkFactor(ctx, tx, u.ID, code, recovery)
+	if _, e = tx.Exec(ctx, `UPDATE iam.mfa_factor SET status='active',verified_at=now(),last_used_at=now(),last_used_step=$2 WHERE id=$1::uuid`, fid, step); e != nil {
+		return nil, e
+	}
+	if _, e = tx.Exec(ctx, `UPDATE iam.user_account SET mfa_required=true WHERE id=$1::uuid`, a.ID); e != nil {
+		return nil, e
+	}
+	if _, e = tx.Exec(ctx, `UPDATE iam.session SET mfa_verified_at=now(),auth_method='password_mfa' WHERE id=$1::uuid`, a.SessionID); e != nil {
+		return nil, e
+	}
+	codes, e := replaceRecoveryCodes(ctx, tx, a.ID)
+	if e != nil {
+		return nil, e
+	}
+	if e = platform.Audit(ctx, tx, "auth.mfa_enroll_confirm", "authentication", "success", "user", a.ID, "", ""); e != nil {
+		return nil, e
+	}
+	return codes, tx.Commit(ctx)
+}
+
+// DisableMFA disables TOTP after verifying password and second factor, then revokes all user sessions.
+func (s Service) DisableMFA(ctx context.Context, a Actor, currentPassword, code, recoveryCode, request string) error {
+	if (code == "") == (recoveryCode == "") {
+		return platform.Fail(422, "validation", "Provide either a 6-digit code or a recovery_code")
+	}
+	keys, e := s.keys()
+	if e != nil {
+		return e
+	}
+	tx, _, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	if e = verifyCurrentPassword(ctx, tx, a.ID, currentPassword); e != nil {
+		return e
+	}
+	ok, method, e := s.verifySecondFactor(ctx, tx, keys, a.ID, code, recoveryCode, s.now())
+	if e != nil {
+		return e
+	}
+	if !ok {
+		return platform.Unauthorized()
+	}
+	if _, e = tx.Exec(ctx, `UPDATE iam.mfa_factor SET status='revoked' WHERE user_id=$1::uuid AND factor_type='totp' AND status<>'revoked'`, a.ID); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(ctx, `DELETE FROM iam.mfa_recovery_code WHERE user_id=$1::uuid`, a.ID); e != nil {
+		return e
+	}
+	if _, e = tx.Exec(ctx, `UPDATE iam.user_account SET mfa_required=false WHERE id=$1::uuid`, a.ID); e != nil {
+		return e
+	}
+	if e = revokeUserSessions(ctx, tx, a.ID, "superseded"); e != nil {
+		return e
+	}
+	if e = platform.Audit(ctx, tx, "auth.mfa_disable", "authentication", "success", "user", a.ID, "", method); e != nil {
+		return e
+	}
+	return tx.Commit(ctx)
+}
+
+// RegenerateRecoveryCodes replaces all recovery codes after verifying password and second factor.
+func (s Service) RegenerateRecoveryCodes(ctx context.Context, a Actor, currentPassword, code, recoveryCode, request string) ([]string, error) {
+	if (code == "") == (recoveryCode == "") {
+		return nil, platform.Fail(422, "validation", "Provide either a 6-digit code or a recovery_code")
+	}
+	keys, e := s.keys()
+	if e != nil {
+		return nil, e
+	}
+	tx, _, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
+	if e != nil {
+		return nil, e
+	}
+	defer tx.Rollback(ctx)
+	if e = verifyCurrentPassword(ctx, tx, a.ID, currentPassword); e != nil {
+		return nil, e
+	}
+	ok, method, e := s.verifySecondFactor(ctx, tx, keys, a.ID, code, recoveryCode, s.now())
 	if e != nil {
 		return nil, e
 	}
 	if !ok {
-		return nil, rejectMFAManagement(ctx, tx, u.ID, "auth.mfa_recovery_regenerate", request, "invalid_"+method, platform.Fail(422, "invalid_mfa_code", "The second-factor code is not valid"))
+		return nil, platform.Unauthorized()
 	}
-	codes, e := replaceRecoveryCodes(ctx, tx, u.ID)
+	codes, e := replaceRecoveryCodes(ctx, tx, a.ID)
 	if e != nil {
 		return nil, e
 	}
-	if e = bumpSecurityVersion(ctx, tx, u.ID); e != nil {
-		return nil, e
-	}
-	if e = revokeOtherSessions(ctx, tx, u.ID, a.SessionID); e != nil {
-		return nil, e
-	}
-	if e = platform.AuditReason(ctx, tx, u.ID, "auth.mfa_recovery_regenerate", u.ID, "", request, "success", method); e != nil {
+	if e = platform.Audit(ctx, tx, "auth.mfa_recovery_regenerate", "authentication", "success", "user", a.ID, "", method); e != nil {
 		return nil, e
 	}
 	return codes, tx.Commit(ctx)

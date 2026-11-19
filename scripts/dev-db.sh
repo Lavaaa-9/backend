@@ -9,7 +9,7 @@ if [[ ! -f .env ]]; then
 import os,secrets,base64
 owner,app,admin,reception=[secrets.token_hex(24) for _ in range(4)]
 phi_key='dev1:'+base64.b64encode(secrets.token_bytes(32)).decode()
-lines=dict(APP_ENV='development',HTTP_ADDR='127.0.0.1:8080',ALLOWED_ORIGINS='http://localhost:3000',CLINIC_TIMEZONE='Africa/Dar_es_Salaam',PG_OWNER_PASSWORD=owner,APP_DB_ROLE='spartial_app',APP_DB_PASSWORD=app,DATABASE_ADMIN_URL=f'postgres://spartial_owner:{owner}@127.0.0.1:55432/spartial?sslmode=disable',DATABASE_URL=f'postgres://spartial_app:{app}@127.0.0.1:55432/spartial?sslmode=disable',TEST_DATABASE_URL=f'postgres://spartial_owner:{owner}@127.0.0.1:55432/postgres?sslmode=disable',SEED_ADMIN_PASSWORD=admin,SEED_RECEPTION_PASSWORD=reception,MINIO_ROOT_USER='spartial-development',MINIO_ROOT_PASSWORD=secrets.token_hex(24),PHI_ENCRYPTION_KEYS=phi_key,PHI_ACTIVE_KEY_ID='dev1',MFA_ENFORCE_PRIVILEGED='false',IDENTIFIER_INDEX_KEY=base64.b64encode(secrets.token_bytes(32)).decode())
+lines=dict(APP_ENV='development',HTTP_ADDR='127.0.0.1:8080',ALLOWED_ORIGINS='http://localhost:3000',CLINIC_TIMEZONE='Africa/Dar_es_Salaam',PG_OWNER_PASSWORD=owner,APP_DB_ROLE='spartial_app',APP_DB_PASSWORD=app,DATABASE_ADMIN_URL=f'postgres://spartial_owner:{owner}@127.0.0.1:55432/spartial_hms?sslmode=disable',DATABASE_URL=f'postgres://spartial_app:{app}@127.0.0.1:55432/spartial_hms?sslmode=disable',TEST_DATABASE_URL=f'postgres://spartial_owner:{owner}@127.0.0.1:55432/postgres?sslmode=disable',SEED_ADMIN_PASSWORD=admin,SEED_RECEPTION_PASSWORD=reception,MINIO_ROOT_USER='spartial-development',MINIO_ROOT_PASSWORD=secrets.token_hex(24),PHI_ENCRYPTION_KEYS=phi_key,PHI_ACTIVE_KEY_ID='dev1',MFA_ENFORCE_PRIVILEGED='false',IDENTIFIER_INDEX_KEY=base64.b64encode(secrets.token_bytes(32)).decode())
 fd=os.open('.env',os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
 with os.fdopen(fd,'w') as f:
  for k,v in lines.items(): f.write(f'{k}={v}\n')
@@ -26,6 +26,11 @@ if 'PHI_ENCRYPTION_KEYS' not in names and 'PHI_ACTIVE_KEY_ID' not in names:
  os.chmod(p,0o600)
 if 'IDENTIFIER_INDEX_KEY' not in names:
  with p.open('a') as f:f.write('IDENTIFIER_INDEX_KEY='+base64.b64encode(secrets.token_bytes(32)).decode()+'\n')
+ os.chmod(p,0o600)
+if 'DATABASE_WORKER_URL' not in names:
+ wpw=secrets.token_hex(24)
+ with p.open('a') as f:
+  f.write(f'WORKER_DB_PASSWORD={wpw}\nDATABASE_WORKER_URL=postgres://spartial_worker:{wpw}@127.0.0.1:55432/spartial_hms?sslmode=disable\n')
  os.chmod(p,0o600)
 PYKEY
 set -a
@@ -45,10 +50,9 @@ fi
 if ! pg_ctl -D "$PWD/.local/postgres" status >/dev/null 2>&1; then
   pg_ctl -D "$PWD/.local/postgres" -l "$PWD/.local/postgres.log" -o "-h 127.0.0.1 -p 55432 -k $PWD/.local" start
 fi
-if [[ "$(psql "$TEST_DATABASE_URL" -Atqc "SELECT 1 FROM pg_database WHERE datname='spartial'")" != 1 ]]; then
-  psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE spartial' >/dev/null
+if [[ "$(psql "$TEST_DATABASE_URL" -Atqc "SELECT 1 FROM pg_database WHERE datname='spartial_hms'")" != 1 ]]; then
+  psql "$TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE spartial_hms' >/dev/null
 fi
-go run ./cmd/manage migrate
-go run ./cmd/manage grant-runtime
-go run ./cmd/manage seed
+go run ./cmd/manage bootstrap-development
+psql "$DATABASE_ADMIN_URL" -v ON_ERROR_STOP=1 -v wpw="$WORKER_DB_PASSWORD" <<< "ALTER ROLE spartial_worker WITH LOGIN PASSWORD :'wpw';" >/dev/null
 printf '%s\n' 'Development database ready. Credentials are in the ignored .env file.'

@@ -2,57 +2,95 @@ package platform
 
 import (
 	"context"
-	"github.com/google/uuid"
+	"errors"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Job struct {
-	ID, Type, Lease string
-	Attempts        int
-}
-
-func ClaimJob(ctx context.Context, db *pgxpool.Pool) (Job, error) {
-	var j Job
-	j.Lease = uuid.NewString()
-	e := db.QueryRow(ctx, `WITH candidate AS (SELECT id FROM outbox WHERE ((status='pending' AND available_at<=now()) OR (status='processing' AND lease_until<now())) AND attempts<5 ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1)
- UPDATE outbox o SET status='processing',lease_until=now()+interval '30 seconds',lease_token=$1::uuid,attempts=attempts+1 FROM candidate c WHERE o.id=c.id RETURNING o.id::text,o.event_type,o.attempts`, j.Lease).Scan(&j.ID, &j.Type, &j.Attempts)
-	if e != nil {
-		return j, e
-	}
-	return j, nil
-}
-
-// CompleteDevelopmentJob atomically records a sink observation and acknowledges the lease.
-func CompleteDevelopmentJob(ctx context.Context, db *pgxpool.Pool, j Job) error {
-	tx, e := db.Begin(ctx)
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback(ctx)
-	var id string
-	e = tx.QueryRow(ctx, `SELECT id::text FROM outbox WHERE id=$1::uuid AND lease_token=$2::uuid AND status='processing' AND lease_until>now() FOR UPDATE`, j.ID, j.Lease).Scan(&id)
-	if e != nil {
-		return e
-	}
-	if j.Type != "patient.registered" {
-		return Fail(422, "unsupported_event", "No configured consumer")
-	}
-	if _, e = tx.Exec(ctx, `INSERT INTO development_event_sink(event_id,event_type) VALUES($1::uuid,$2) ON CONFLICT DO NOTHING`, id, j.Type); e != nil {
-		return e
-	}
-	if _, e = tx.Exec(ctx, `UPDATE outbox SET status='completed',lease_until=NULL,lease_token=NULL,last_error=NULL WHERE id=$1::uuid`, id); e != nil {
-		return e
-	}
-	return tx.Commit(ctx)
-}
-func FailJob(ctx context.Context, db *pgxpool.Pool, j Job) error {
-	_, e := db.Exec(ctx, `UPDATE outbox SET status=CASE WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,available_at=now()+($3*interval '1 second'),lease_until=NULL,lease_token=NULL,last_error='consumer_failed' WHERE id=$1::uuid AND lease_token=$2::uuid AND status='processing'`, j.ID, j.Lease, int64(1<<j.Attempts))
-	return e
-}
-func ReapExhaustedJobs(ctx context.Context, db *pgxpool.Pool) error {
-	_, e := db.Exec(ctx, `UPDATE outbox SET status='failed',last_error='lease_expired_at_retry_limit',lease_until=NULL,lease_token=NULL WHERE status='processing' AND lease_until<now() AND attempts>=5`)
-	return e
-}
-
 var ErrNoJob = pgx.ErrNoRows
+
+type OutboxJob struct {
+	ID            int64
+	OrgID         string
+	EventType     string
+	AggregateType string
+	AggregateID   string
+	Attempts      int
+	MaxAttempts   int
+	WorkerID      string
+}
+
+func ReapStaleOutbox(ctx context.Context, db *pgxpool.Pool) (int64, error) {
+	tag, e := db.Exec(ctx, `UPDATE comms.outbox
+ SET status=CASE WHEN attempts>=max_attempts THEN 'dead' ELSE 'failed' END,
+     locked_by=NULL, locked_at=NULL, last_error='worker_lease_expired',
+     available_at=now()+interval '5 seconds'
+ WHERE status='processing' AND locked_at < now() - interval '2 minutes'`)
+	if e != nil {
+		return 0, e
+	}
+	return tag.RowsAffected(), nil
+}
+
+func ClaimOutbox(ctx context.Context, db *pgxpool.Pool, workerID string) (OutboxJob, error) {
+	var j OutboxJob
+	j.WorkerID = workerID
+	e := db.QueryRow(ctx, `WITH candidate AS (
+ SELECT id FROM comms.outbox
+ WHERE status IN ('pending','failed') AND available_at <= now() AND attempts < max_attempts
+ ORDER BY available_at, id FOR UPDATE SKIP LOCKED LIMIT 1
+)
+UPDATE comms.outbox o
+ SET status='processing', locked_by=$1, locked_at=now(), attempts=o.attempts+1
+FROM candidate c WHERE o.id=c.id
+RETURNING o.id, coalesce(o.org_id::text,''), o.event_type, o.aggregate_type, o.aggregate_id::text, o.attempts, o.max_attempts`, workerID).
+		Scan(&j.ID, &j.OrgID, &j.EventType, &j.AggregateType, &j.AggregateID, &j.Attempts, &j.MaxAttempts)
+	return j, e
+}
+
+func CompleteOutbox(ctx context.Context, db *pgxpool.Pool, j OutboxJob) error {
+	tag, e := db.Exec(ctx, `UPDATE comms.outbox
+ SET status='succeeded', processed_at=now(), locked_by=NULL, locked_at=NULL, last_error=NULL
+ WHERE id=$1 AND locked_by=$2 AND status='processing'`, j.ID, j.WorkerID)
+	if e != nil {
+		return e
+	}
+	if tag.RowsAffected() != 1 {
+		return Conflict()
+	}
+	return nil
+}
+
+func FailOutbox(ctx context.Context, db *pgxpool.Pool, j OutboxJob, reason string) error {
+	backoff := int64(1 << min(j.Attempts, 10))
+	_, e := db.Exec(ctx, `UPDATE comms.outbox
+ SET status=CASE WHEN attempts>=max_attempts THEN 'dead' ELSE 'failed' END,
+     available_at=now()+($3 * interval '1 second'),
+     locked_by=NULL, locked_at=NULL, last_error=left($4, 1000)
+ WHERE id=$1 AND locked_by=$2 AND status='processing'`, j.ID, j.WorkerID, backoff, reason)
+	return e
+}
+
+// SealAuditPending chains any completed transactions' audit events into a new immutable seal.
+func SealAuditPending(ctx context.Context, db *pgxpool.Pool) (sealNo int64, rowCount int64, sealed bool, err error) {
+	var sn, rc *int64
+	err = db.QueryRow(ctx, `SELECT seal_no, row_count FROM audit.seal_pending()`).Scan(&sn, &rc)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if sn == nil {
+		return 0, 0, false, nil
+	}
+	return *sn, *rc, true, nil
+}
+
+// DetectPrivacyAlerts runs the database privacy anomaly detector and returns the number of new alerts created.
+func DetectPrivacyAlerts(ctx context.Context, db *pgxpool.Pool, readThreshold, mfaThreshold int) (int, error) {
+	var n int
+	e := db.QueryRow(ctx, `SELECT gov.detect_privacy_alerts($1,$2)`, readThreshold, mfaThreshold).Scan(&n)
+	return n, e
+}

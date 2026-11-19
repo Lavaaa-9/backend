@@ -24,10 +24,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"spartial.local/backend/api/openapi"
 	"spartial.local/backend/internal/config"
+	"spartial.local/backend/internal/modules/admin"
+	"spartial.local/backend/internal/modules/approvals"
+	"spartial.local/backend/internal/modules/audit"
+	"spartial.local/backend/internal/modules/billing"
+	"spartial.local/backend/internal/modules/clinical"
+	"spartial.local/backend/internal/modules/comms"
+	"spartial.local/backend/internal/modules/diagnostics"
+	"spartial.local/backend/internal/modules/documents"
 	"spartial.local/backend/internal/modules/facilities"
 	"spartial.local/backend/internal/modules/identity"
 	"spartial.local/backend/internal/modules/patients"
+	"spartial.local/backend/internal/modules/pharmacy"
 	"spartial.local/backend/internal/modules/privacy"
+	"spartial.local/backend/internal/modules/reports"
+	"spartial.local/backend/internal/modules/telehealth"
+	"spartial.local/backend/internal/modules/visits"
 	"spartial.local/backend/internal/platform"
 	"spartial.local/backend/internal/security"
 )
@@ -41,6 +53,18 @@ type API struct {
 	Identity   identity.Service
 	Patients   patients.Service
 	Facilities facilities.Service
+	Visits     visits.Service
+	Reports    reports.Service
+	Clinical   clinical.Service
+	Diag       diagnostics.Service
+	Pharmacy   pharmacy.Service
+	Billing    billing.Service
+	Telehealth telehealth.Service
+	Documents  documents.Service
+	Privacy    privacy.Service
+	Approvals  approvals.Service
+	Comms      comms.Service
+	Admin      admin.Service
 	Config     config.Config
 	Log        *slog.Logger
 }
@@ -58,7 +82,26 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 	if err != nil {
 		return nil, err
 	}
-	api := API{db, identity.Service{Repo: identity.Repository{DB: db}, DummyHash: dummy, Keys: cfg.Keys, Issuer: "Spartial Polyclinic"}, patients.Service{DB: db, Location: location, ClinicalAccessEnabled: cfg.CarePolicyEnabled}, facilities.Service{DB: db}, cfg, log}
+	api := API{
+		DB:         db,
+		Identity:   identity.Service{DB: db, DummyHash: dummy, Keys: cfg.Keys, Production: cfg.Env == "production"},
+		Patients:   patients.Service{DB: db, Location: location, Keys: cfg.Keys, IndexKey: cfg.IdentifierIndexKey},
+		Facilities: facilities.Service{DB: db},
+		Visits:     visits.Service{DB: db},
+		Reports:    reports.Service{DB: db},
+		Clinical:   clinical.Service{DB: db},
+		Diag:       diagnostics.Service{DB: db},
+		Pharmacy:   pharmacy.Service{DB: db},
+		Billing:    billing.Service{DB: db, Keys: cfg.Keys, IndexKey: cfg.IdentifierIndexKey},
+		Telehealth: telehealth.Service{DB: db},
+		Documents:  documents.Service{DB: db, Keys: cfg.Keys},
+		Privacy:    privacy.Service{DB: db},
+		Approvals:  approvals.Service{DB: db},
+		Comms:      comms.Service{DB: db},
+		Admin:      admin.Service{DB: db},
+		Config:     cfg,
+		Log:        log,
+	}
 	metrics := &telemetry.Metrics{}
 	app := fiber.New(fiber.Config{AppName: "Spartial API", BodyLimit: 64 * 1024, TrustProxy: len(cfg.TrustedProxies) > 0, TrustProxyConfig: fiber.TrustProxyConfig{Proxies: cfg.TrustedProxies}, ProxyHeader: "X-Forwarded-For", EnableIPValidation: true, Immutable: true, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, StructValidator: structValidator{validator.New()}, JSONDecoder: strictJSON, ErrorHandler: api.handleError})
 	app.Use(func(c fiber.Ctx) error {
@@ -135,7 +178,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		return c.SendStatus(204)
 	})
 	auth.Get("/sessions", api.authenticate, func(c fiber.Ctx) error {
-		v, e := api.Identity.Repo.Sessions(c.Context(), actor(c).ID)
+		v, e := api.Identity.Sessions(c.Context(), actor(c).ID)
 		if e != nil {
 			return e
 		}
@@ -172,7 +215,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		if e := api.client(c, in.ClientType); e != nil {
 			return e
 		}
-		t, e := api.Identity.VerifyMFA(c.Context(), in, c.IP(), rid(c))
+		t, e := api.Identity.VerifyMFA(c.Context(), in, c.IP(), c.Get("User-Agent"), rid(c))
 		if e != nil {
 			return e
 		}
@@ -202,7 +245,6 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		if e != nil {
 			return e
 		}
-		// Recovery codes are shown exactly once; only their digests are stored.
 		return c.JSON(fiber.Map{"recovery_codes": codes})
 	})
 	auth.Post("/mfa/disable", api.authenticate, func(c fiber.Ctx) error {
@@ -235,15 +277,74 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.JSON(fiber.Map{"recovery_codes": codes})
 	})
-	staff := app.Group("/api/v1/staff", api.authenticate)
-	staff.Get("/facilities", api.require("facilities.read"), func(c fiber.Ctx) error {
-		v, e := api.Facilities.List(c.Context(), actor(c))
+	auth.Post("/password-reset/request", func(c fiber.Ctx) error {
+		var in struct {
+			Email string `json:"email" validate:"required,email,max=254"`
+		}
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		tok, e := api.Identity.RequestPasswordReset(c.Context(), in.Email, c.IP(), c.Get("User-Agent"))
+		if e != nil {
+			return e
+		}
+		resp := fiber.Map{"status": "accepted"}
+		if api.Config.Env != "production" && tok != "" {
+			resp["dev_reset_token"] = tok
+		}
+		return c.Status(202).JSON(resp)
+	})
+	auth.Post("/password-reset/confirm", func(c fiber.Ctx) error {
+		var in struct {
+			Token       string `json:"token" validate:"required,min=32,max=128"`
+			NewPassword string `json:"new_password" validate:"required,min=12,max=256"`
+		}
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		if e := api.Identity.ConfirmPasswordReset(c.Context(), in.Token, in.NewPassword, c.IP(), c.Get("User-Agent")); e != nil {
+			return e
+		}
+		api.clearCookie(c)
+		return c.SendStatus(204)
+	})
+	auth.Get("/devices", api.authenticate, func(c fiber.Ctx) error {
+		v, e := api.Identity.ListDevices(c.Context(), actor(c), rid(c))
 		if e != nil {
 			return e
 		}
 		return c.JSON(fiber.Map{"items": v})
 	})
-	staff.Post("/facilities", api.require("facilities.manage"), func(c fiber.Ctx) error {
+	auth.Post("/devices", api.authenticate, func(c fiber.Ctx) error {
+		var in identity.DeviceInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Identity.RegisterDevice(c.Context(), actor(c), in, api.Config.IdentifierIndexKey, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.Status(201).JSON(v)
+	})
+	auth.Post("/devices/:id/revoke", api.authenticate, func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		v, e := api.Identity.RevokeDevice(c.Context(), actor(c), c.Params("id"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(v)
+	})
+	staff := app.Group("/api/v1/staff", api.authenticate)
+	staff.Get("/facilities", api.require(""), func(c fiber.Ctx) error {
+		v, e := api.Facilities.List(c.Context(), actor(c), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"items": v})
+	})
+	staff.Post("/facilities", api.require("admin.facility.manage"), func(c fiber.Ctx) error {
 		var in facilities.Input
 		if e := bind(c, &in); e != nil {
 			return e
@@ -254,12 +355,12 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.Status(201).JSON(f)
 	})
-	staff.Get("/users", api.require("staff.read"), func(c fiber.Ctx) error {
+	staff.Get("/users", api.require("admin.user.manage"), func(c fiber.Ctx) error {
 		after, n, e := page(c)
 		if e != nil {
 			return e
 		}
-		v, e := api.Identity.Repo.List(c.Context(), after, n)
+		v, e := api.Identity.List(c.Context(), actor(c), after, n, rid(c))
 		if e != nil {
 			return e
 		}
@@ -269,7 +370,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.JSON(fiber.Map{"items": v, "next_cursor": next})
 	})
-	staff.Post("/users", api.require("staff.manage"), func(c fiber.Ctx) error {
+	staff.Post("/users", api.require("admin.user.manage"), func(c fiber.Ctx) error {
 		var in identity.StaffInput
 		if e := bind(c, &in); e != nil {
 			return e
@@ -280,7 +381,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.Status(201).JSON(u)
 	})
-	staff.Put("/users/:id", api.require("staff.manage"), func(c fiber.Ctx) error {
+	staff.Put("/users/:id", api.require("admin.user.manage"), func(c fiber.Ctx) error {
 		if e := validID(c.Params("id")); e != nil {
 			return e
 		}
@@ -294,7 +395,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.JSON(u)
 	})
-	staff.Post("/patients", api.require("patients.write"), func(c fiber.Ctx) error {
+	staff.Post("/patients", api.require("patient.create"), func(c fiber.Ctx) error {
 		var in patients.Input
 		if e := bind(c, &in); e != nil {
 			return e
@@ -305,7 +406,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.Status(201).JSON(p)
 	})
-	staff.Get("/patients", api.require("patients.read"), func(c fiber.Ctx) error {
+	staff.Get("/patients", api.require("patient.read"), func(c fiber.Ctx) error {
 		after, n, e := page(c)
 		if e != nil {
 			return e
@@ -320,7 +421,8 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.JSON(fiber.Map{"items": v, "next_cursor": next})
 	})
-	staff.Get("/patients/:id", api.require("patients.read"), func(c fiber.Ctx) error {
+	api.mountPatientStatic(staff)
+	staff.Get("/patients/:id", api.require("patient.read"), func(c fiber.Ctx) error {
 		if e := validID(c.Params("id")); e != nil {
 			return e
 		}
@@ -330,7 +432,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.JSON(p)
 	})
-	staff.Put("/patients/:id", api.require("patients.write"), func(c fiber.Ctx) error {
+	staff.Put("/patients/:id", api.require("patient.update"), func(c fiber.Ctx) error {
 		if e := validID(c.Params("id")); e != nil {
 			return e
 		}
@@ -344,11 +446,206 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.JSON(p)
 	})
+	staff.Post("/patients/:id/verifications", api.require(""), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in patients.VerificationInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Patients.Verify(c.Context(), actor(c), c.Params("id"), in, c.Get("Idempotency-Key"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.Status(201).JSON(v)
+	})
+	staff.Get("/patients/:id/verifications", api.require("patient.read"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		v, e := api.Patients.Verifications(c.Context(), actor(c), c.Params("id"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"items": v})
+	})
+	staff.Get("/services", api.require(""), func(c fiber.Ctx) error {
+		v, e := api.Visits.Catalog(c.Context(), actor(c), c.Query("category"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"items": v})
+	})
+	staff.Post("/encounters", api.require("encounter.manage"), func(c fiber.Ctx) error {
+		var in visits.EncounterInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Visits.CreateEncounter(c.Context(), actor(c), in, c.Get("Idempotency-Key"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.Status(201).JSON(v)
+	})
+	staff.Get("/encounters", api.require(""), func(c fiber.Ctx) error {
+		after, n, e := page(c)
+		if e != nil {
+			return e
+		}
+		if p := c.Query("patient_id"); p != "" {
+			if e := validID(p); e != nil {
+				return e
+			}
+		}
+		st := c.Query("status")
+		if st != "" && st != "registered" && st != "in_progress" && st != "completed" && st != "cancelled" && st != "entered_in_error" {
+			return platform.Fail(422, "validation", "Invalid status")
+		}
+		v, e := api.Visits.ListEncounters(c.Context(), actor(c), c.Query("patient_id"), st, after, rid(c), n)
+		if e != nil {
+			return e
+		}
+		next := ""
+		if len(v) == n {
+			next = v[len(v)-1].ID
+		}
+		return c.JSON(fiber.Map{"items": v, "next_cursor": next})
+	})
+	staff.Get("/encounters/:id", api.require(""), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		v, e := api.Visits.GetEncounter(c.Context(), actor(c), c.Params("id"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(v)
+	})
+	staff.Post("/encounters/:id/status", api.require("encounter.manage"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in visits.StatusInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Visits.ChangeStatus(c.Context(), actor(c), c.Params("id"), in, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(v)
+	})
+	staff.Post("/encounters/:id/nursing", api.require("nursing.write"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in visits.NursingInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Visits.RecordNursing(c.Context(), actor(c), c.Params("id"), in, c.Get("Idempotency-Key"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.Status(201).JSON(v)
+	})
+	staff.Get("/encounters/:id/nursing", api.require(""), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		v, e := api.Visits.ListNursing(c.Context(), actor(c), c.Params("id"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"items": v})
+	})
+	staff.Post("/nursing/:id/void", api.require("nursing.write"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in visits.ErrorInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Visits.VoidNursing(c.Context(), actor(c), c.Params("id"), in, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(v)
+	})
+	staff.Post("/encounters/:id/procedures", api.require(""), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in visits.ProcedureInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Visits.RecordProcedure(c.Context(), actor(c), c.Params("id"), in, c.Get("Idempotency-Key"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.Status(201).JSON(v)
+	})
+	staff.Get("/encounters/:id/procedures", api.require(""), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		v, e := api.Visits.ListProcedures(c.Context(), actor(c), c.Params("id"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"items": v})
+	})
+	staff.Post("/procedures/:id/action", api.require(""), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in visits.ProcedureAction
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		v, e := api.Visits.ActOnProcedure(c.Context(), actor(c), c.Params("id"), in, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(v)
+	})
+	staff.Get("/reports/staff-activity", api.require("report.staff_activity"), func(c fiber.Ctx) error {
+		to := time.Now().In(time.UTC)
+		from := to.AddDate(0, 0, -6)
+		var e error
+		if v := c.Query("from"); v != "" {
+			if from, e = time.Parse("2006-01-02", v); e != nil {
+				return platform.Fail(422, "validation", "from must be YYYY-MM-DD")
+			}
+		}
+		if v := c.Query("to"); v != "" {
+			if to, e = time.Parse("2006-01-02", v); e != nil {
+				return platform.Fail(422, "validation", "to must be YYYY-MM-DD")
+			}
+		}
+		if to.Before(from) || to.Sub(from) > 366*24*time.Hour {
+			return platform.Fail(422, "validation", "Date range must be 0-366 days")
+		}
+		v, e := api.Reports.StaffActivity(c.Context(), actor(c), from, to, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"items": v, "from": from.Format("2006-01-02"), "to": to.Format("2006-01-02")})
+	})
+	staff.Get("/reports/staff-access", api.require("report.staff_activity"), func(c fiber.Ctx) error {
+		v, e := api.Reports.StaffAccess(c.Context(), actor(c), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"items": v})
+	})
+	api.mountExt(staff)
+	api.mountComplete(staff)
 	staff.Get("/audit", api.require("audit.read"), api.audit)
-	api.registerPrivacy(staff)
-	api.registerApprovals(staff)
-	api.registerIdentifiers(staff)
-	staff.Get("/metrics", api.require("metrics.read"), func(c fiber.Ctx) error {
+	staff.Get("/metrics", api.require("report.view"), func(c fiber.Ctx) error {
 		c.Set("Content-Type", "text/plain; version=0.0.4")
 		return c.SendString(metrics.Prometheus())
 	})
@@ -409,7 +706,7 @@ func (api API) authenticate(c fiber.Ctx) error {
 	if !strings.HasPrefix(h, "Bearer ") || len(h) > 150 {
 		return platform.Unauthorized()
 	}
-	a, e := api.Identity.Repo.Actor(c.Context(), strings.TrimPrefix(h, "Bearer "))
+	a, e := api.Identity.Actor(c.Context(), strings.TrimPrefix(h, "Bearer "), rid(c))
 	if e != nil {
 		if errors.Is(e, context.DeadlineExceeded) {
 			return e
@@ -424,36 +721,48 @@ func (api API) authenticate(c fiber.Ctx) error {
 	c.Locals("actor", a)
 	return c.Next()
 }
+
+// require checks a permission derived by the database for this session; an empty name
+// only requires authentication. RLS enforces the same permissions again in SQL.
 func (api API) require(permission string) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		a := actor(c)
-		if !a.Can(permission) {
-			if e := api.deny(c, a, ""); e != nil {
-				return e
-			}
-			return platform.Forbidden()
-		}
-		// Enforce assurance on staff permission routes; authentication/MFA bootstrap stays available.
-		remoteClinical := api.Config.MFAEnforceRemoteClinical && (a.Role == "doctor" || a.Role == "laboratory" || a.Role == "pharmacy") && !api.Config.IsClinicIP(c.IP())
-		if ((api.Config.MFAEnforcePrivileged && a.Privileged) || remoteClinical) && !a.MFAVerified {
-			if e := api.deny(c, a, "mfa_required"); e != nil {
-				return e
-			}
+		if !a.MFAVerified && api.needsMFA(c, a) {
+			api.deny(c, a, "mfa_required")
 			return platform.Fail(403, "mfa_required", "This role requires a session verified with a second factor; enroll at /api/v1/auth/mfa/enroll or sign in again")
+		}
+		if permission != "" && !a.Can(permission) {
+			api.deny(c, a, permission)
+			return platform.Forbidden()
 		}
 		return c.Next()
 	}
 }
-func (api API) deny(c fiber.Ctx, a identity.Actor, reason string) error {
-	tx, e := api.DB.Begin(c.Context())
+
+func (api API) needsMFA(c fiber.Ctx, a identity.Actor) bool {
+	if api.Config.MFAEnforcePrivileged {
+		switch a.Role {
+		case "administrator", "compliance_officer", "billing_supervisor", "lab_supervisor":
+			return true
+		}
+	}
+	if api.Config.MFAEnforceRemoteClinical && !api.Config.IsClinicIP(c.IP()) {
+		switch a.Role {
+		case "doctor", "nurse":
+			return true
+		}
+	}
+	return false
+}
+func (api API) deny(c fiber.Ctx, a identity.Actor, permission string) {
+	tx, _, e := platform.BeginRequest(c.Context(), api.DB, a.SessionID, rid(c))
 	if e != nil {
-		return e
+		return
 	}
 	defer tx.Rollback(c.Context())
-	if e = platform.AuditReason(c.Context(), tx, a.ID, "access.denied", "", "", rid(c), "denied", reason); e != nil {
-		return e
+	if platform.Audit(c.Context(), tx, "access.denied", "authorization", "denied", "", "", "", permission) == nil {
+		tx.Commit(c.Context())
 	}
-	return tx.Commit(c.Context())
 }
 func (api API) origin(c fiber.Ctx) error {
 	for _, o := range api.Config.Origins {
@@ -480,12 +789,11 @@ func (api API) login(c fiber.Ctx) error {
 	if e := api.client(c, in.ClientType); e != nil {
 		return e
 	}
-	t, challenge, e := api.Identity.Login(c.Context(), in, c.IP(), rid(c))
+	t, challenge, e := api.Identity.Login(c.Context(), in, c.IP(), c.Get("User-Agent"), rid(c))
 	if e != nil {
 		return e
 	}
 	if challenge != nil {
-		// No session exists yet; the client must POST /auth/mfa/verify with this challenge.
 		return c.JSON(challenge)
 	}
 	return api.tokens(c, t, in.ClientType)
@@ -547,12 +855,15 @@ func (api API) handleError(c fiber.Ctx, err error) error {
 		status, code, message = f.Code, "http_error", "Request could not be processed"
 	}
 	if status >= 500 {
-		api.Log.Error("request_failed", "request_id", c.Locals("request_id"), "code", code)
+		if api.Config.Env == "production" {
+			api.Log.Error("request_failed", "request_id", c.Locals("request_id"), "code", code)
+		} else {
+			api.Log.Error("request_failed", "request_id", c.Locals("request_id"), "code", code, "cause", err.Error())
+		}
 	}
 	return c.Status(status).JSON(fiber.Map{"error": fiber.Map{"code": code, "message": message, "fields": fields}, "request_id": c.Locals("request_id")})
 }
 func (api API) audit(c fiber.Ctx) error {
-	// Globally privileged privacy-review permission; no clinical payloads are returned.
 	before := c.Query("before")
 	var cursor int64 = 9223372036854775807
 	if before != "" {
@@ -562,7 +873,7 @@ func (api API) audit(c fiber.Ctx) error {
 		}
 		cursor = n
 	}
-	out, e := (privacy.Service{DB: api.DB}).List(c.Context(), actor(c), cursor, rid(c))
+	out, e := (audit.Service{DB: api.DB}).List(c.Context(), actor(c), cursor, rid(c))
 	if e != nil {
 		return e
 	}

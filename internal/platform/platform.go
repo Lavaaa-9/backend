@@ -2,7 +2,9 @@ package platform
 
 import (
 	"context"
-	"database/sql"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
@@ -10,8 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"github.com/pressly/goose/v3"
-	"spartial.local/backend/db"
 	"time"
 )
 
@@ -35,10 +35,19 @@ func Normalize(err error) error {
 	var p *pgconn.PgError
 	if errors.As(err, &p) {
 		switch p.Code {
-		case "23505", "40001", "40P01":
+		case "SPT01", "SPI01", "SPS01", "SPB01":
+			// these messages are written for users by the database rules
+			return Fail(409, "conflict", p.Message)
+		case "SPV01", "SPC01", "SPX01":
+			return Fail(422, "rule_violation", p.Message)
+		case "23505", "23P01", "40001", "40P01":
 			return Conflict()
 		case "23503", "23514", "22P02":
 			return Fail(422, "invalid_reference", "Invalid value or reference")
+		case "SPA01", "42501":
+			return Forbidden()
+		case "28000":
+			return Unauthorized()
 		}
 	}
 	return err
@@ -68,55 +77,110 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 	}
 	return p, nil
 }
-func Migrate(ctx context.Context, url string) error {
-	conn, err := sql.Open("pgx", url)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	goose.SetBaseFS(db.Migrations)
-	if err = goose.SetDialect("postgres"); err != nil {
-		return err
-	}
-	return goose.UpContext(ctx, conn, "migrations")
-}
-func Audit(ctx context.Context, tx pgx.Tx, actor, action, resource, patient, request, outcome string) error {
-	return AuditReason(ctx, tx, actor, action, resource, patient, request, outcome, "")
-}
 
-// AuditReason records a short, non-PHI machine reason (for example "mfa_required").
-// Never place clinical content, search strings or credentials in reason.
-func AuditReason(ctx context.Context, tx pgx.Tx, actor, action, resource, patient, request, outcome, reason string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO audit_events(actor_id,action,resource_id,patient_id,request_id,outcome,reason) VALUES(NULLIF($1,'')::uuid,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,$5::uuid,$6,NULLIF($7,''))`, actor, action, resource, patient, request, outcome, reason)
-	return err
-}
-
-const SchemaVersion = 6
+// LatestMigration is the newest spartial-db migration this API was written against.
+const LatestMigration = "0018_compliance_document_read"
 
 func CheckSchema(ctx context.Context, db *pgxpool.Pool) error {
-	var version int
-	if e := db.QueryRow(ctx, `SELECT COALESCE(max(version_id),0) FROM goose_db_version WHERE is_applied`).Scan(&version); e != nil || version != SchemaVersion {
+	var ok bool
+	if e := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM public.schema_migration WHERE version=$1)`, LatestMigration).Scan(&ok); e != nil || !ok {
 		return Fail(503, "not_ready", "Database schema version does not match this API")
 	}
 	return nil
 }
+
+// CheckRuntimeRole refuses privileged connections: the API must run as spartial_app so RLS applies.
 func CheckRuntimeRole(ctx context.Context, db *pgxpool.Pool) error {
 	var unsafe bool
-	e := db.QueryRow(ctx, `SELECT rolsuper OR rolreplication OR rolbypassrls OR rolcreaterole OR rolcreatedb OR has_schema_privilege(current_user,'public','CREATE') OR EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname IN ('patients','audit_events','audit_seals') AND pg_has_role(current_user,c.relowner,'MEMBER')) OR has_table_privilege(current_user,'audit_events','UPDATE,DELETE,TRUNCATE') OR has_table_privilege(current_user,'audit_seals','INSERT,UPDATE,DELETE,TRUNCATE') FROM pg_roles WHERE rolname=current_user`).Scan(&unsafe)
+	e := db.QueryRow(ctx, `SELECT rolsuper OR rolreplication OR rolbypassrls OR rolcreaterole OR rolcreatedb OR pg_has_role(current_user,'spartial_owner','MEMBER') FROM pg_roles WHERE rolname=current_user`).Scan(&unsafe)
 	if e != nil {
 		return e
 	}
 	if unsafe {
-		return fmt.Errorf("API requires a restricted runtime database role; run manage grant-runtime and use DATABASE_URL")
+		return fmt.Errorf("API requires the restricted spartial_app runtime role in DATABASE_URL")
 	}
 	return nil
 }
 
-// AuditPatientReads batches attributable hits; no patient bodies enter the audit rows.
-func AuditPatientReads(ctx context.Context, tx pgx.Tx, actor, action string, patients []string, request string) error {
-	if len(patients) == 0 {
-		return nil
+// Session is the identity the database derived from the session in sec.begin_request.
+type Session struct {
+	UserID, OrgID, MembershipID, ActorType string
+	Permissions                            []string
+}
+
+// BeginRequest opens a transaction whose first statement binds the request context. The
+// database validates the session itself; RLS, triggers and audit then rely on that context.
+func BeginRequest(ctx context.Context, db *pgxpool.Pool, sessionID, requestID string) (pgx.Tx, Session, error) {
+	var s Session
+	tx, e := db.Begin(ctx)
+	if e != nil {
+		return nil, s, e
 	}
-	_, e := tx.Exec(ctx, `INSERT INTO audit_events(actor_id,action,resource_id,patient_id,request_id,outcome) SELECT $1::uuid,$2,id,id,$4::uuid,'success' FROM unnest($3::uuid[]) AS p(id)`, actor, action, patients, request)
+	if e = BindRequest(ctx, tx, sessionID, requestID, &s); e != nil {
+		tx.Rollback(ctx)
+		return nil, s, e
+	}
+	return tx, s, nil
+}
+
+// BindRequest calls sec.begin_request inside an existing transaction.
+func BindRequest(ctx context.Context, tx pgx.Tx, sessionID, requestID string, s *Session) error {
+	var membership, patient *string
+	e := tx.QueryRow(ctx, `SELECT user_id::text,org_id::text,membership_id::text,patient_id::text,actor_type,permissions FROM sec.begin_request($1::uuid,$2::uuid)`, sessionID, requestID).Scan(&s.UserID, &s.OrgID, &membership, &patient, &s.ActorType, &s.Permissions)
+	if membership != nil {
+		s.MembershipID = *membership
+	}
 	return e
+}
+
+// Audit writes an explicit audit event through audit.log (request context supplies actor and tenant).
+func Audit(ctx context.Context, tx pgx.Tx, action, category, outcome, resourceType, resourceID, patientID, reason string) error {
+	_, e := tx.Exec(ctx, `SELECT audit.log($1,$2,$3,NULLIF($4,''),NULLIF($5,'')::uuid,NULLIF($6,'')::uuid,NULLIF($7,''))`, action, category, outcome, resourceType, resourceID, patientID, reason)
+	return e
+}
+
+// AuditPreAuth records events that have no request context yet (login success/failure).
+func AuditPreAuth(ctx context.Context, tx pgx.Tx, action, outcome, resourceID, org, user, reason, ip, userAgent string) error {
+	_, e := tx.Exec(ctx, `SELECT audit.log($1,'authentication',$2,'session',NULLIF($3,'')::uuid,NULL,NULLIF($4,''),NULLIF($5,'')::inet,NULLIF($6,''),NULL,NULLIF($7,'')::uuid,NULLIF($8,'')::uuid,'staff')`, action, outcome, resourceID, reason, ip, userAgent, org, user)
+	return e
+}
+
+// Idempotent runs create at most once per (org, user, operation, key); a replay returns the saved response.
+func Idempotent[T any](ctx context.Context, tx pgx.Tx, s Session, op, key string, input any, create func() (T, error)) (T, error) {
+	var zero T
+	if len(key) < 8 || len(key) > 128 {
+		return zero, Fail(422, "idempotency_key_required", "Idempotency-Key must be 8–128 characters")
+	}
+	body, e := json.Marshal(input)
+	if e != nil {
+		return zero, e
+	}
+	sum := sha256.Sum256(body)
+	hash := hex.EncodeToString(sum[:])
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, s.OrgID+s.UserID+op+key); e != nil {
+		return zero, e
+	}
+	var prior string
+	var saved []byte
+	e = tx.QueryRow(ctx, `SELECT request_hash,response FROM sec.idempotency WHERE org_id=$1::uuid AND user_id=$2::uuid AND operation=$3 AND key=$4`, s.OrgID, s.UserID, op, key).Scan(&prior, &saved)
+	if e == nil {
+		if prior != hash {
+			return zero, Fail(409, "idempotency_conflict", "Key already used with a different request")
+		}
+		var out T
+		return out, json.Unmarshal(saved, &out)
+	}
+	if !errors.Is(e, pgx.ErrNoRows) {
+		return zero, e
+	}
+	out, e := create()
+	if e != nil {
+		return zero, e
+	}
+	resp, e := json.Marshal(out)
+	if e != nil {
+		return zero, e
+	}
+	_, e = tx.Exec(ctx, `INSERT INTO sec.idempotency(org_id,user_id,operation,key,request_hash,response) VALUES($1::uuid,$2::uuid,$3,$4,$5,$6::jsonb)`, s.OrgID, s.UserID, op, key, hash, resp)
+	return out, e
 }
