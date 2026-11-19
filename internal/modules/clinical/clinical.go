@@ -393,9 +393,25 @@ func (s Service) CancelFollowUp(ctx context.Context, a identity.Actor, id string
 
 // ---------------------------------------------------------------- departments and queue
 
-func (s Service) Departments(ctx context.Context, a identity.Actor, request string) ([]Raw, error) {
+func (s Service) Departments(ctx context.Context, a identity.Actor, facilityID, status, q, request string) ([]Raw, error) {
+	q = strings.TrimSpace(q)
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, _ platform.Session) ([]Raw, error) {
-		return platform.Many(ctx, tx, `SELECT `+platform.JSON("d", true)+` FROM org.department d WHERE status='active' AND facility_id=ANY($1::uuid[]) ORDER BY name`, a.FacilityIDs)
+		if a.Can("admin.facility.manage") {
+			return platform.Many(ctx, tx, `SELECT `+platform.JSON("d", true)+` FROM org.department d
+ WHERE ($1='' OR d.facility_id=NULLIF($1,'')::uuid)
+   AND ($2='' OR d.status=$2)
+   AND ($3='' OR position(lower($3) IN lower(d.name))>0 OR position(lower($3) IN lower(d.code))>0)
+ ORDER BY d.name LIMIT 200`, facilityID, status, q)
+		}
+		if status == "" {
+			status = "active"
+		}
+		return platform.Many(ctx, tx, `SELECT `+platform.JSON("d", true)+` FROM org.department d
+ WHERE d.facility_id=ANY($1::uuid[])
+   AND ($2='' OR d.facility_id=NULLIF($2,'')::uuid)
+   AND d.status=$3
+   AND ($4='' OR position(lower($4) IN lower(d.name))>0 OR position(lower($4) IN lower(d.code))>0)
+ ORDER BY d.name LIMIT 200`, a.FacilityIDs, facilityID, status, q)
 	})
 }
 

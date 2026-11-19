@@ -90,8 +90,26 @@ sec = list(d["components"]["securitySchemes"])[0]
 def op2(*a, **k):
     o = op(*a, **k); o["security"] = [{sec: []}]; return o
 
+GEN = {"type": "object", "additionalProperties": True}
 B = "/api/v1/staff"
 d["paths"].update({
+ f"{B}/facilities/{{id}}": {
+   "get": op2("Get facility details", "", ok(200, GEN), [idp("id")]),
+   "put": op2("Update facility details", "admin.facility.manage", ok(200, GEN), [idp("id")], None)},
+ f"{B}/facilities/{{id}}/status": {
+   "post": op2("Activate or deactivate a facility", "admin.facility.manage", ok(200, GEN), [idp("id")], None)},
+ f"{B}/facilities/{{id}}/departments": {
+   "get": op2("List departments belonging to a facility", "", ok(200, GEN), [idp("id")])},
+ f"{B}/users/{{id}}": {
+   "get": op2("Get a staff account profile", "admin.user.manage", ok(200, GEN), [idp("id")]),
+   "put": d["paths"].get(f"{B}/users/{{id}}", {}).get("put") or op2("Update a staff account", "admin.user.manage", ok(200, GEN), [idp("id")], None)},
+ f"{B}/users/{{id}}/status": {
+   "post": op2("Activate, suspend, or deactivate a staff account", "admin.user.manage", ok(200, GEN), [idp("id")], None)},
+ f"{B}/patients/{{id}}/status": {
+   "post": op2("Change patient status (active, inactive, deceased)", "patient.update", ok(200, GEN), [idp("id")], None)},
+ f"{B}/audit/export": {
+   "get": op2("Export filtered audit metadata for compliance review", "audit.read", ok(200, GEN),
+     [{"name": n, "in": "query", "schema": STR} for n in ("actor_id", "patient_id", "action", "outcome", "from", "to", "before", "limit")])},
  f"{B}/patients/{{id}}/verifications": {
    "post": op2("Record a patient verification", "patient.create or patient.update", ok(201, ref("Verification")), [idp("id")], "VerificationInput", True),
    "get": op2("Verification history", "patient.read", ok(200, items("Verification")), [idp("id")])},
@@ -118,7 +136,14 @@ d["paths"].update({
  f"{B}/reports/staff-access": {"get": op2("Staff roles, privileged permissions and MFA state", "report.staff_activity", ok(200, items("StaffAccessRow")))},
 })
 
-GEN = {"type": "object", "additionalProperties": True}
+# ensure requestBody is set on new PUT/POST paths added directly above
+for p, verb in [
+    (f"{B}/facilities/{{id}}", "put"),
+    (f"{B}/facilities/{{id}}/status", "post"),
+    (f"{B}/users/{{id}}/status", "post"),
+    (f"{B}/patients/{{id}}/status", "post"),
+]:
+    d["paths"][p][verb]["requestBody"] = {"required": True, "content": {"application/json": {"schema": GEN}}}
 
 # --- MFA authentication endpoints
 S["Challenge"] = obj({"mfa_required": BOOL, "challenge_token": STR, "expires_in": INT}, ["mfa_required", "challenge_token", "expires_in"])

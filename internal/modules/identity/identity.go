@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,17 +14,45 @@ import (
 	"spartial.local/backend/internal/security"
 )
 
+var staffPhoneE164 = regexp.MustCompile(`^\+[1-9][0-9]{7,14}$`)
+
+func normalizeStaffPhone(v string) (string, error) {
+	v = strings.NewReplacer(" ", "", "-", "", "(", "", ")", "").Replace(strings.TrimSpace(v))
+	switch {
+	case v == "":
+		return "", nil
+	case strings.HasPrefix(v, "00"):
+		v = "+" + v[2:]
+	case strings.HasPrefix(v, "0"):
+		v = "+255" + v[1:]
+	case strings.HasPrefix(v, "255"):
+		v = "+" + v
+	}
+	if !staffPhoneE164.MatchString(v) {
+		return "", platform.Fail(422, "validation", "Phone must be a valid international number such as +255712345678")
+	}
+	return v, nil
+}
+
 // Roles an administrator may assign (system roles in spartial-db).
 const roleList = "administrator receptionist nurse doctor lab_technician lab_supervisor pharmacist cashier billing_supervisor manager compliance_officer"
 
 type User struct {
-	ID          string   `json:"id"`
-	Email       string   `json:"email"`
-	DisplayName string   `json:"display_name"`
-	Role        string   `json:"role"`
-	Active      bool     `json:"active"`
-	Version     int      `json:"version"`
-	FacilityIDs []string `json:"facility_ids"`
+	ID                string     `json:"id"`
+	Email             string     `json:"email"`
+	DisplayName       string     `json:"display_name"`
+	Role              string     `json:"role"`
+	Status            string     `json:"status,omitempty"`
+	Active            bool       `json:"active"`
+	Version           int        `json:"version"`
+	FacilityIDs       []string   `json:"facility_ids"`
+	DepartmentIDs     []string   `json:"department_ids,omitempty"`
+	Phone             string     `json:"phone,omitempty"`
+	EmployeeNo        string     `json:"employee_no,omitempty"`
+	JobTitle          string     `json:"job_title,omitempty"`
+	ProfessionalBody  string     `json:"professional_body,omitempty"`
+	ProfessionalRegNo string     `json:"professional_reg_no,omitempty"`
+	LastLoginAt       *time.Time `json:"last_login_at,omitempty"`
 }
 type Actor struct {
 	User
@@ -94,18 +123,44 @@ type Tokens struct {
 	RefreshToken string `json:"-"`
 }
 type StaffInput struct {
-	Email       string   `json:"email" validate:"required,email,max=254"`
-	DisplayName string   `json:"display_name" validate:"required,min=1,max=150"`
-	Password    string   `json:"password" validate:"required,min=12,max=256"`
-	Role        string   `json:"role" validate:"required,oneof=administrator receptionist nurse doctor lab_technician lab_supervisor pharmacist cashier billing_supervisor manager compliance_officer"`
-	FacilityIDs []string `json:"facility_ids" validate:"required,min=1,max=30,unique,dive,uuid"`
+	Email             string   `json:"email" validate:"required,email,max=254"`
+	DisplayName       string   `json:"display_name" validate:"required,min=1,max=150"`
+	Password          string   `json:"password" validate:"required,min=12,max=256"`
+	Role              string   `json:"role" validate:"required,oneof=administrator receptionist nurse doctor lab_technician lab_supervisor pharmacist cashier billing_supervisor manager compliance_officer"`
+	FacilityIDs       []string `json:"facility_ids" validate:"required,min=1,max=30,unique,dive,uuid"`
+	DepartmentIDs     []string `json:"department_ids" validate:"omitempty,max=30,unique,dive,uuid"`
+	Phone             string   `json:"phone" validate:"omitempty,max=40"`
+	EmployeeNo        string   `json:"employee_no" validate:"omitempty,max=40"`
+	JobTitle          string   `json:"job_title" validate:"omitempty,max=120"`
+	ProfessionalBody  string   `json:"professional_body" validate:"omitempty,oneof=MCT TNMC PC HLPC other"`
+	ProfessionalRegNo string   `json:"professional_reg_no" validate:"omitempty,max=60"`
+	Status            string   `json:"status" validate:"omitempty,oneof=active pending_activation"`
 }
 type UpdateStaff struct {
-	DisplayName string   `json:"display_name" validate:"required,min=1,max=150"`
-	Role        string   `json:"role" validate:"required,oneof=administrator receptionist nurse doctor lab_technician lab_supervisor pharmacist cashier billing_supervisor manager compliance_officer"`
-	Active      *bool    `json:"active" validate:"required"`
-	FacilityIDs []string `json:"facility_ids" validate:"required,min=1,max=30,unique,dive,uuid"`
-	Version     int      `json:"version" validate:"required,min=1"`
+	DisplayName       string   `json:"display_name" validate:"required,min=1,max=150"`
+	Role              string   `json:"role" validate:"required,oneof=administrator receptionist nurse doctor lab_technician lab_supervisor pharmacist cashier billing_supervisor manager compliance_officer"`
+	Active            *bool    `json:"active" validate:"required"`
+	FacilityIDs       []string `json:"facility_ids" validate:"required,min=1,max=30,unique,dive,uuid"`
+	DepartmentIDs     []string `json:"department_ids" validate:"omitempty,max=30,unique,dive,uuid"`
+	Phone             string   `json:"phone" validate:"omitempty,max=40"`
+	EmployeeNo        string   `json:"employee_no" validate:"omitempty,max=40"`
+	JobTitle          string   `json:"job_title" validate:"omitempty,max=120"`
+	ProfessionalBody  string   `json:"professional_body" validate:"omitempty,oneof=MCT TNMC PC HLPC other"`
+	ProfessionalRegNo string   `json:"professional_reg_no" validate:"omitempty,max=60"`
+	Version           int      `json:"version" validate:"required,min=1"`
+}
+type StatusChangeInput struct {
+	Status  string `json:"status" validate:"required,oneof=active suspended deactivated"`
+	Reason  string `json:"reason" validate:"max=500"`
+	Version int    `json:"version" validate:"required,min=1"`
+}
+type StaffFilter struct {
+	Q          string
+	Role       string
+	Status     string
+	FacilityID string
+	After      string
+	Limit      int
 }
 type Session struct {
 	ID          string     `json:"id"`
@@ -138,15 +193,18 @@ func loadActor(ctx context.Context, tx pgx.Tx, sid, request string) (Actor, erro
 		return a, e
 	}
 	var roles, facilities []string
+	var status string
 	var active, mfaEnabled bool
-	e := tx.QueryRow(ctx, `SELECT p.email,p.display_name,p.row_version,p.roles,p.facility_ids::text[],(u.status='active'),
+	var phone string
+	var lastLogin *time.Time
+	e := tx.QueryRow(ctx, `SELECT p.email,p.display_name,p.row_version,p.roles,p.facility_ids::text[],u.status,(u.status='active'),coalesce(u.phone_e164,''),u.last_login_at,
  EXISTS(SELECT 1 FROM iam.mfa_factor f WHERE f.user_id=u.id AND f.status='active')
- FROM iam.my_profile() p, iam.user_account u WHERE u.id=sec.current_user_id()`).Scan(&a.Email, &a.DisplayName, &a.Version, &roles, &facilities, &active, &mfaEnabled)
+ FROM iam.my_profile() p, iam.user_account u WHERE u.id=sec.current_user_id()`).Scan(&a.Email, &a.DisplayName, &a.Version, &roles, &facilities, &status, &active, &phone, &lastLogin, &mfaEnabled)
 	if e != nil {
 		return a, e
 	}
 	a.ID, a.OrgID, a.MembershipID, a.SessionID = s.UserID, s.OrgID, s.MembershipID, sid
-	a.Active, a.FacilityIDs, a.Permissions, a.MFAEnabled = active, facilities, withAliases(s.Permissions), mfaEnabled
+	a.Status, a.Active, a.Phone, a.LastLoginAt, a.FacilityIDs, a.Permissions, a.MFAEnabled = status, active, phone, lastLogin, facilities, withAliases(s.Permissions), mfaEnabled
 	if len(roles) > 0 {
 		a.Role = roles[0]
 	}
@@ -453,24 +511,38 @@ func revokeUserSessions(ctx context.Context, tx pgx.Tx, uid, reason string) erro
 
 // ---- staff administration (requires admin.user.manage; RLS enforces it again) ----
 
-const userSelect = `SELECT u.id::text,u.email::text,u.display_name,coalesce(r.code,''),(u.status='active' AND m.status='active'),u.row_version,coalesce(f.ids,'{}'::text[])
+const userSelect = `SELECT u.id::text,u.email::text,u.display_name,coalesce(r.code,''),u.status,(u.status='active' AND m.status='active'),u.row_version,coalesce(f.ids,'{}'::text[]),coalesce(d.ids,'{}'::text[]),
+ coalesce(u.phone_e164,''),coalesce(m.employee_no,''),coalesce(m.job_title,''),coalesce(m.professional_body,''),coalesce(m.professional_reg_no,''),u.last_login_at
  FROM iam.membership m JOIN iam.user_account u ON u.id=m.user_id
  LEFT JOIN LATERAL (SELECT (array_agg(ro.code ORDER BY ro.code))[1] AS code FROM iam.membership_role mr JOIN iam.role ro ON ro.id=mr.role_id WHERE mr.membership_id=m.id AND mr.revoked_at IS NULL) r ON true
  LEFT JOIN LATERAL (SELECT array_agg(DISTINCT fa.id::text) AS ids FROM iam.membership_role mr JOIN org.facility fa ON fa.org_id=mr.org_id AND (mr.facility_id IS NULL OR mr.facility_id=fa.id) WHERE mr.membership_id=m.id AND mr.revoked_at IS NULL) f ON true
+ LEFT JOIN LATERAL (SELECT array_agg(sd.department_id::text ORDER BY sd.is_primary DESC, sd.assigned_at ASC) AS ids FROM org.staff_department sd WHERE sd.membership_id=m.id) d ON true
  WHERE m.org_id=sec.current_org_id()`
 
 func scanUser(row pgx.Row) (User, error) {
 	var u User
-	e := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Role, &u.Active, &u.Version, &u.FacilityIDs)
+	e := row.Scan(&u.ID, &u.Email, &u.DisplayName, &u.Role, &u.Status, &u.Active, &u.Version, &u.FacilityIDs, &u.DepartmentIDs,
+		&u.Phone, &u.EmployeeNo, &u.JobTitle, &u.ProfessionalBody, &u.ProfessionalRegNo, &u.LastLoginAt)
 	return u, e
 }
-func (s Service) List(ctx context.Context, a Actor, after string, limit int, request string) ([]User, error) {
+
+func (s Service) List(ctx context.Context, a Actor, f StaffFilter, request string) ([]User, error) {
+	if !a.Can("admin.user.manage") {
+		return nil, platform.Forbidden()
+	}
+	f.Q = strings.TrimSpace(f.Q)
 	tx, _, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
 	if e != nil {
 		return nil, e
 	}
 	defer tx.Rollback(ctx)
-	rows, e := tx.Query(ctx, userSelect+` AND ($1='' OR u.id>NULLIF($1,'')::uuid) ORDER BY u.id LIMIT $2`, after, limit)
+	rows, e := tx.Query(ctx, userSelect+`
+ AND ($1='' OR u.id>NULLIF($1,'')::uuid)
+ AND ($2='' OR position(lower($2) IN lower(u.display_name))>0 OR position(lower($2) IN lower(u.email::text))>0 OR position(lower($2) IN lower(coalesce(m.employee_no,'')))>0)
+ AND ($3='' OR coalesce(r.code,'')=$3)
+ AND ($4='' OR u.status=$4)
+ AND ($5='' OR $5 = ANY(coalesce(f.ids,'{}'::text[])))
+ ORDER BY u.id LIMIT $6`, f.After, f.Q, f.Role, f.Status, f.FacilityID, f.Limit)
 	if e != nil {
 		return nil, e
 	}
@@ -485,6 +557,32 @@ func (s Service) List(ctx context.Context, a Actor, after string, limit int, req
 	}
 	return out, rows.Err()
 }
+
+func (s Service) GetStaff(ctx context.Context, a Actor, id, request string) (User, error) {
+	if !a.Can("admin.user.manage") {
+		return User{}, platform.Forbidden()
+	}
+	tx, _, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
+	if e != nil {
+		return User{}, e
+	}
+	defer tx.Rollback(ctx)
+	return scanUser(tx.QueryRow(ctx, userSelect+` AND u.id=$1::uuid`, id))
+}
+
+func (s Service) syncStaffDepartments(ctx context.Context, tx pgx.Tx, orgID, membershipID string, deptIDs []string) error {
+	if _, e := tx.Exec(ctx, `DELETE FROM org.staff_department WHERE membership_id=$1::uuid`, membershipID); e != nil {
+		return e
+	}
+	for i, d := range deptIDs {
+		if _, e := tx.Exec(ctx, `INSERT INTO org.staff_department(org_id,membership_id,department_id,is_primary) VALUES($1::uuid,$2::uuid,$3::uuid,$4)`,
+			orgID, membershipID, d, i == 0); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
 func (s Service) assignRole(ctx context.Context, tx pgx.Tx, org, membership, role string, facilities []string) error {
 	var roleID string
 	if e := tx.QueryRow(ctx, `SELECT id::text FROM iam.role WHERE org_id IS NULL AND code=$1 AND status='active'`, role).Scan(&roleID); e != nil {
@@ -510,8 +608,19 @@ func (s Service) CreateStaff(ctx context.Context, a Actor, in StaffInput, reques
 	}
 	in.Email = strings.ToLower(strings.TrimSpace(in.Email))
 	in.DisplayName = strings.TrimSpace(in.DisplayName)
+	in.EmployeeNo = strings.TrimSpace(in.EmployeeNo)
+	in.JobTitle = strings.TrimSpace(in.JobTitle)
+	in.ProfessionalBody = strings.TrimSpace(in.ProfessionalBody)
+	in.ProfessionalRegNo = strings.TrimSpace(in.ProfessionalRegNo)
 	if in.DisplayName == "" {
 		return User{}, platform.Fail(422, "validation", "Display name is required")
+	}
+	if (in.ProfessionalBody == "") != (in.ProfessionalRegNo == "") {
+		return User{}, platform.Fail(422, "validation", "professional_body and professional_reg_no must be provided together")
+	}
+	phone, e := normalizeStaffPhone(in.Phone)
+	if e != nil {
+		return User{}, e
 	}
 	if !security.PasswordAllowed(in.Password) {
 		return User{}, platform.Fail(422, "weak_password", "Choose a longer password that is not on the common-password list")
@@ -520,23 +629,34 @@ func (s Service) CreateStaff(ctx context.Context, a Actor, in StaffInput, reques
 	if e != nil {
 		return User{}, e
 	}
+	uStatus, mStatus := "active", "active"
+	if in.Status == "pending_activation" {
+		uStatus, mStatus = "pending_activation", "invited"
+	}
 	tx, sess, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
 	if e != nil {
 		return User{}, e
 	}
 	defer tx.Rollback(ctx)
 	var uid, mid string
-	if e = tx.QueryRow(ctx, `INSERT INTO iam.user_account(account_type,email,display_name,status,mfa_required) VALUES('staff',$1,$2,'active',false) RETURNING id::text`, in.Email, in.DisplayName).Scan(&uid); e != nil {
+	if e = tx.QueryRow(ctx, `INSERT INTO iam.user_account(account_type,email,phone_e164,display_name,status,mfa_required) VALUES('staff',$1,NULLIF($2,''),$3,$4,false) RETURNING id::text`,
+		in.Email, phone, in.DisplayName, uStatus).Scan(&uid); e != nil {
 		return User{}, e
 	}
 	if _, e = tx.Exec(ctx, `INSERT INTO iam.password_credential(user_id,password_hash) VALUES($1::uuid,$2)`, uid, hash); e != nil {
 		return User{}, e
 	}
-	if e = tx.QueryRow(ctx, `INSERT INTO iam.membership(org_id,user_id,status) VALUES($1::uuid,$2::uuid,'active') RETURNING id::text`, sess.OrgID, uid).Scan(&mid); e != nil {
+	if e = tx.QueryRow(ctx, `INSERT INTO iam.membership(org_id,user_id,employee_no,job_title,professional_body,professional_reg_no,status) VALUES($1::uuid,$2::uuid,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7) RETURNING id::text`,
+		sess.OrgID, uid, in.EmployeeNo, in.JobTitle, in.ProfessionalBody, in.ProfessionalRegNo, mStatus).Scan(&mid); e != nil {
 		return User{}, e
 	}
 	if e = s.assignRole(ctx, tx, sess.OrgID, mid, in.Role, in.FacilityIDs); e != nil {
 		return User{}, e
+	}
+	if len(in.DepartmentIDs) > 0 {
+		if e = s.syncStaffDepartments(ctx, tx, sess.OrgID, mid, in.DepartmentIDs); e != nil {
+			return User{}, e
+		}
 	}
 	if e = platform.Audit(ctx, tx, "staff.user.create", "administration", "success", "user", uid, "", ""); e != nil {
 		return User{}, e
@@ -555,30 +675,52 @@ func (s Service) UpdateStaff(ctx context.Context, a Actor, id string, in UpdateS
 		return User{}, platform.Fail(409, "self_change", "Administrators cannot change their own role or status")
 	}
 	in.DisplayName = strings.TrimSpace(in.DisplayName)
+	in.EmployeeNo = strings.TrimSpace(in.EmployeeNo)
+	in.JobTitle = strings.TrimSpace(in.JobTitle)
+	in.ProfessionalBody = strings.TrimSpace(in.ProfessionalBody)
+	in.ProfessionalRegNo = strings.TrimSpace(in.ProfessionalRegNo)
 	if in.DisplayName == "" {
 		return User{}, platform.Fail(422, "validation", "Display name is required")
+	}
+	if (in.ProfessionalBody == "") != (in.ProfessionalRegNo == "") {
+		return User{}, platform.Fail(422, "validation", "professional_body and professional_reg_no must be provided together")
+	}
+	phone, e := normalizeStaffPhone(in.Phone)
+	if e != nil {
+		return User{}, e
 	}
 	tx, sess, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
 	if e != nil {
 		return User{}, e
 	}
 	defer tx.Rollback(ctx)
-	var mid string
-	if e = tx.QueryRow(ctx, `SELECT m.id::text FROM iam.membership m JOIN iam.user_account u ON u.id=m.user_id WHERE m.org_id=sec.current_org_id() AND u.id=$1::uuid FOR UPDATE OF m`, id).Scan(&mid); e != nil {
+	var mid, curMStatus string
+	if e = tx.QueryRow(ctx, `SELECT m.id::text,m.status FROM iam.membership m JOIN iam.user_account u ON u.id=m.user_id WHERE m.org_id=sec.current_org_id() AND u.id=$1::uuid FOR UPDATE OF m`, id).Scan(&mid, &curMStatus); e != nil {
 		return User{}, e
 	}
 	status, mstatus := "active", "active"
 	if !*in.Active {
-		status, mstatus = "deactivated", "suspended"
+		status = "deactivated"
+		if curMStatus == "active" {
+			mstatus = "suspended"
+		} else {
+			mstatus = curMStatus
+		}
 	}
-	tag, e := tx.Exec(ctx, `UPDATE iam.user_account SET display_name=$2,status=$3 WHERE id=$1::uuid AND row_version=$4`, id, in.DisplayName, status, in.Version)
+	tag, e := tx.Exec(ctx, `UPDATE iam.user_account SET display_name=$2,status=$3,phone_e164=CASE WHEN $5<>'' THEN $5 ELSE phone_e164 END WHERE id=$1::uuid AND row_version=$4`,
+		id, in.DisplayName, status, in.Version, phone)
 	if e != nil {
 		return User{}, e
 	}
 	if tag.RowsAffected() != 1 {
 		return User{}, platform.Conflict()
 	}
-	if _, e = tx.Exec(ctx, `UPDATE iam.membership SET status=$2 WHERE id=$1::uuid AND status<>$2 AND status<>'ended'`, mid, mstatus); e != nil {
+	if _, e = tx.Exec(ctx, `UPDATE iam.membership SET status=CASE WHEN status='ended' THEN status ELSE $2 END,
+ employee_no=CASE WHEN $3<>'' THEN $3 ELSE employee_no END,
+ job_title=CASE WHEN $4<>'' THEN $4 ELSE job_title END,
+ professional_body=CASE WHEN $5<>'' THEN $5 ELSE professional_body END,
+ professional_reg_no=CASE WHEN $6<>'' THEN $6 ELSE professional_reg_no END
+ WHERE id=$1::uuid`, mid, mstatus, in.EmployeeNo, in.JobTitle, in.ProfessionalBody, in.ProfessionalRegNo); e != nil {
 		return User{}, e
 	}
 	if _, e = tx.Exec(ctx, `UPDATE iam.membership_role SET revoked_at=now(),revoked_by=sec.current_user_id(),revoke_reason='role or scope changed' WHERE membership_id=$1::uuid AND revoked_at IS NULL`, mid); e != nil {
@@ -586,6 +728,11 @@ func (s Service) UpdateStaff(ctx context.Context, a Actor, id string, in UpdateS
 	}
 	if e = s.assignRole(ctx, tx, sess.OrgID, mid, in.Role, in.FacilityIDs); e != nil {
 		return User{}, e
+	}
+	if in.DepartmentIDs != nil {
+		if e = s.syncStaffDepartments(ctx, tx, sess.OrgID, mid, in.DepartmentIDs); e != nil {
+			return User{}, e
+		}
 	}
 	reason := "admin_revoked"
 	if !*in.Active {
@@ -595,6 +742,68 @@ func (s Service) UpdateStaff(ctx context.Context, a Actor, id string, in UpdateS
 		return User{}, e
 	}
 	if e = platform.Audit(ctx, tx, "staff.user.update", "administration", "success", "user", id, "", ""); e != nil {
+		return User{}, e
+	}
+	u, e := scanUser(tx.QueryRow(ctx, userSelect+` AND u.id=$1::uuid`, id))
+	if e != nil {
+		return User{}, e
+	}
+	return u, tx.Commit(ctx)
+}
+
+func (s Service) ChangeStatus(ctx context.Context, a Actor, id string, in StatusChangeInput, request string) (User, error) {
+	if !a.Can("admin.user.manage") {
+		return User{}, platform.Forbidden()
+	}
+	if id == a.ID {
+		return User{}, platform.Fail(409, "self_change", "Administrators cannot change their own account status")
+	}
+	tx, _, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
+	if e != nil {
+		return User{}, e
+	}
+	defer tx.Rollback(ctx)
+	var mid, curMStatus string
+	if e = tx.QueryRow(ctx, `SELECT m.id::text,m.status FROM iam.membership m JOIN iam.user_account u ON u.id=m.user_id WHERE m.org_id=sec.current_org_id() AND u.id=$1::uuid FOR UPDATE OF m`, id).Scan(&mid, &curMStatus); e != nil {
+		return User{}, e
+	}
+	tag, e := tx.Exec(ctx, `UPDATE iam.user_account SET status=$2,locked_until=CASE WHEN $2='active' THEN NULL ELSE locked_until END,failed_login_count=CASE WHEN $2='active' THEN 0 ELSE failed_login_count END WHERE id=$1::uuid AND row_version=$3`,
+		id, in.Status, in.Version)
+	if e != nil {
+		return User{}, e
+	}
+	if tag.RowsAffected() != 1 {
+		return User{}, platform.Conflict()
+	}
+	targetMStatus := curMStatus
+	switch in.Status {
+	case "active":
+		if curMStatus != "ended" {
+			targetMStatus = "active"
+		}
+	case "suspended", "deactivated":
+		if curMStatus == "active" {
+			targetMStatus = "suspended"
+		}
+	}
+	if targetMStatus != curMStatus {
+		if _, e = tx.Exec(ctx, `UPDATE iam.membership SET status=$2 WHERE id=$1::uuid`, mid, targetMStatus); e != nil {
+			return User{}, e
+		}
+	}
+	action := "staff.user.activate"
+	if in.Status == "suspended" {
+		action = "staff.user.suspend"
+		if e = revokeUserSessions(ctx, tx, id, "account_disabled"); e != nil {
+			return User{}, e
+		}
+	} else if in.Status == "deactivated" {
+		action = "staff.user.deactivate"
+		if e = revokeUserSessions(ctx, tx, id, "account_disabled"); e != nil {
+			return User{}, e
+		}
+	}
+	if e = platform.Audit(ctx, tx, action, "administration", "success", "user", id, "", strings.TrimSpace(in.Reason)); e != nil {
 		return User{}, e
 	}
 	u, e := scanUser(tx.QueryRow(ctx, userSelect+` AND u.id=$1::uuid`, id))

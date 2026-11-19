@@ -117,7 +117,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		defer cancel()
 		spanCtx, span := otel.Tracer("spartial.http").Start(ctx, "http.request")
 		defer span.End()
-		c.SetContext(spanCtx)
+		c.SetContext(platform.WithClientMeta(spanCtx, c.IP(), c.Get("User-Agent")))
 		start := time.Now()
 		var err error
 		if cfg.Env == "production" && c.Scheme() != "https" && c.Path() != "/health/live" && c.Path() != "/health/ready" {
@@ -338,7 +338,10 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 	})
 	staff := app.Group("/api/v1/staff", api.authenticate)
 	staff.Get("/facilities", api.require(""), func(c fiber.Ctx) error {
-		v, e := api.Facilities.List(c.Context(), actor(c), rid(c))
+		if e := oneOf(c, "status", "active", "inactive"); e != nil {
+			return e
+		}
+		v, e := api.Facilities.List(c.Context(), actor(c), c.Query("q"), c.Query("status"), rid(c))
 		if e != nil {
 			return e
 		}
@@ -355,12 +358,73 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.Status(201).JSON(f)
 	})
+	staff.Get("/facilities/:id", api.require(""), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		f, e := api.Facilities.Get(c.Context(), actor(c), c.Params("id"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(f)
+	})
+	staff.Put("/facilities/:id", api.require("admin.facility.manage"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in facilities.UpdateInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		f, e := api.Facilities.Update(c.Context(), actor(c), c.Params("id"), in, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(f)
+	})
+	staff.Post("/facilities/:id/status", api.require("admin.facility.manage"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in facilities.StatusInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		f, e := api.Facilities.SetStatus(c.Context(), actor(c), c.Params("id"), in, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(f)
+	})
+	staff.Get("/facilities/:id/departments", api.require(""), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		v, e := api.Facilities.Departments(c.Context(), actor(c), c.Params("id"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(fiber.Map{"items": v})
+	})
 	staff.Get("/users", api.require("admin.user.manage"), func(c fiber.Ctx) error {
 		after, n, e := page(c)
 		if e != nil {
 			return e
 		}
-		v, e := api.Identity.List(c.Context(), actor(c), after, n, rid(c))
+		if e = optUUID(c, "facility_id"); e != nil {
+			return e
+		}
+		if e = oneOf(c, "status", "pending_activation", "active", "suspended", "deactivated"); e != nil {
+			return e
+		}
+		v, e := api.Identity.List(c.Context(), actor(c), identity.StaffFilter{
+			Q:          c.Query("q"),
+			Role:       c.Query("role"),
+			Status:     c.Query("status"),
+			FacilityID: c.Query("facility_id"),
+			After:      after,
+			Limit:      n,
+		}, rid(c))
 		if e != nil {
 			return e
 		}
@@ -369,6 +433,16 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 			next = v[len(v)-1].ID
 		}
 		return c.JSON(fiber.Map{"items": v, "next_cursor": next})
+	})
+	staff.Get("/users/:id", api.require("admin.user.manage"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		u, e := api.Identity.GetStaff(c.Context(), actor(c), c.Params("id"), rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(u)
 	})
 	staff.Post("/users", api.require("admin.user.manage"), func(c fiber.Ctx) error {
 		var in identity.StaffInput
@@ -395,6 +469,20 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		}
 		return c.JSON(u)
 	})
+	staff.Post("/users/:id/status", api.require("admin.user.manage"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in identity.StatusChangeInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		u, e := api.Identity.ChangeStatus(c.Context(), actor(c), c.Params("id"), in, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(u)
+	})
 	staff.Post("/patients", api.require("patient.create"), func(c fiber.Ctx) error {
 		var in patients.Input
 		if e := bind(c, &in); e != nil {
@@ -411,7 +499,28 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 		if e != nil {
 			return e
 		}
-		v, e := api.Patients.List(c.Context(), actor(c), c.Query("q"), after, rid(c), n)
+		if e = optUUID(c, "facility_id"); e != nil {
+			return e
+		}
+		if e = optDate(c, "birth_date"); e != nil {
+			return e
+		}
+		if e = oneOf(c, "status", "active", "inactive", "deceased", "merged"); e != nil {
+			return e
+		}
+		if e = oneOf(c, "sort", "id", "name", "newest"); e != nil {
+			return e
+		}
+		v, e := api.Patients.List(c.Context(), actor(c), patients.ListFilter{
+			Q:          c.Query("q"),
+			Phone:      c.Query("phone"),
+			BirthDate:  c.Query("birth_date"),
+			FacilityID: c.Query("facility_id"),
+			Status:     c.Query("status"),
+			Sort:       c.Query("sort"),
+			After:      after,
+			Limit:      n,
+		}, rid(c))
 		if e != nil {
 			return e
 		}
@@ -441,6 +550,20 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 			return e
 		}
 		p, e := api.Patients.Update(c.Context(), actor(c), c.Params("id"), in, rid(c))
+		if e != nil {
+			return e
+		}
+		return c.JSON(p)
+	})
+	staff.Post("/patients/:id/status", api.require("patient.update"), func(c fiber.Ctx) error {
+		if e := validID(c.Params("id")); e != nil {
+			return e
+		}
+		var in patients.StatusInput
+		if e := bind(c, &in); e != nil {
+			return e
+		}
+		p, e := api.Patients.ChangeStatus(c.Context(), actor(c), c.Params("id"), in, rid(c))
 		if e != nil {
 			return e
 		}
@@ -644,6 +767,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 	})
 	api.mountExt(staff)
 	api.mountComplete(staff)
+	staff.Get("/audit/export", api.require("audit.read"), api.auditExport)
 	staff.Get("/audit", api.require("audit.read"), api.audit)
 	staff.Get("/metrics", api.require("report.view"), func(c fiber.Ctx) error {
 		c.Set("Content-Type", "text/plain; version=0.0.4")
@@ -863,19 +987,78 @@ func (api API) handleError(c fiber.Ctx, err error) error {
 	}
 	return c.Status(status).JSON(fiber.Map{"error": fiber.Map{"code": code, "message": message, "fields": fields}, "request_id": c.Locals("request_id")})
 }
-func (api API) audit(c fiber.Ctx) error {
-	before := c.Query("before")
-	var cursor int64 = 9223372036854775807
-	if before != "" {
+func parseAuditFilter(c fiber.Ctx, defaultLimit, maxLimit int) (audit.Filter, error) {
+	f := audit.Filter{
+		ActorID:   c.Query("actor_id"),
+		PatientID: c.Query("patient_id"),
+		Action:    c.Query("action"),
+		Outcome:   c.Query("outcome"),
+		Before:    9223372036854775807,
+		Limit:     defaultLimit,
+	}
+	if e := optUUID(c, "actor_id", "patient_id"); e != nil {
+		return f, e
+	}
+	if e := oneOf(c, "outcome", "success", "denied", "failure", "error"); e != nil {
+		return f, e
+	}
+	if before := c.Query("before"); before != "" {
 		n, e := strconv.ParseInt(before, 10, 64)
 		if e != nil || n < 1 {
-			return platform.Fail(422, "validation", "Invalid before cursor")
+			return f, platform.Fail(422, "validation", "Invalid before cursor")
 		}
-		cursor = n
+		f.Before = n
 	}
-	out, e := (audit.Service{DB: api.DB}).List(c.Context(), actor(c), cursor, rid(c))
+	if raw := c.Query("limit"); raw != "" {
+		n, e := strconv.Atoi(raw)
+		if e != nil || n < 1 || n > maxLimit {
+			return f, platform.Fail(422, "validation", "Invalid limit")
+		}
+		f.Limit = n
+	}
+	if raw := c.Query("from"); raw != "" {
+		t, e := time.Parse(time.RFC3339, raw)
+		if e != nil {
+			if d, e2 := time.Parse("2006-01-02", raw); e2 == nil {
+				t = d
+			} else {
+				return f, platform.Fail(422, "validation", "from must be RFC3339 or YYYY-MM-DD")
+			}
+		}
+		f.From = &t
+	}
+	if raw := c.Query("to"); raw != "" {
+		t, e := time.Parse(time.RFC3339, raw)
+		if e != nil {
+			if d, e2 := time.Parse("2006-01-02", raw); e2 == nil {
+				t = d.Add(24*time.Hour - time.Nanosecond)
+			} else {
+				return f, platform.Fail(422, "validation", "to must be RFC3339 or YYYY-MM-DD")
+			}
+		}
+		f.To = &t
+	}
+	return f, nil
+}
+func (api API) audit(c fiber.Ctx) error {
+	f, e := parseAuditFilter(c, 50, 100)
+	if e != nil {
+		return e
+	}
+	out, e := (audit.Service{DB: api.DB}).List(c.Context(), actor(c), f, rid(c))
 	if e != nil {
 		return e
 	}
 	return c.JSON(fiber.Map{"items": out})
+}
+func (api API) auditExport(c fiber.Ctx) error {
+	f, e := parseAuditFilter(c, 500, 1000)
+	if e != nil {
+		return e
+	}
+	out, e := (audit.Service{DB: api.DB}).Export(c.Context(), actor(c), f, rid(c))
+	if e != nil {
+		return e
+	}
+	return c.JSON(fiber.Map{"items": out, "count": len(out), "exported_at": time.Now().UTC().Format(time.RFC3339)})
 }

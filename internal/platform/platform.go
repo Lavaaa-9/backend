@@ -133,9 +133,29 @@ func BindRequest(ctx context.Context, tx pgx.Tx, sessionID, requestID string, s 
 	return e
 }
 
+type clientMetaKey struct{}
+
+type ClientMeta struct {
+	IP, UserAgent string
+}
+
+// WithClientMeta attaches the caller's IP and User-Agent to ctx for automatic audit enrichment.
+func WithClientMeta(ctx context.Context, ip, ua string) context.Context {
+	return context.WithValue(ctx, clientMetaKey{}, ClientMeta{IP: ip, UserAgent: ua})
+}
+
+func clientMeta(ctx context.Context) ClientMeta {
+	if v, ok := ctx.Value(clientMetaKey{}).(ClientMeta); ok {
+		return v
+	}
+	return ClientMeta{}
+}
+
 // Audit writes an explicit audit event through audit.log (request context supplies actor and tenant).
 func Audit(ctx context.Context, tx pgx.Tx, action, category, outcome, resourceType, resourceID, patientID, reason string) error {
-	_, e := tx.Exec(ctx, `SELECT audit.log($1,$2,$3,NULLIF($4,''),NULLIF($5,'')::uuid,NULLIF($6,'')::uuid,NULLIF($7,''))`, action, category, outcome, resourceType, resourceID, patientID, reason)
+	m := clientMeta(ctx)
+	_, e := tx.Exec(ctx, `SELECT audit.log($1,$2,$3,NULLIF($4,''),NULLIF($5,'')::uuid,NULLIF($6,'')::uuid,NULLIF($7,''),NULLIF($8,'')::inet,NULLIF($9,''))`,
+		action, category, outcome, resourceType, resourceID, patientID, reason, m.IP, m.UserAgent)
 	return e
 }
 

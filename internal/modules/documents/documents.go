@@ -2,13 +2,16 @@
 package documents
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,7 +28,52 @@ type Service struct {
 }
 type Raw = platform.Raw
 
-const docJ = `((to_jsonb(d) - 'org_id' - 'created_by' - 'updated_by' - 'row_version' - 'sha256' - 'encryption_key_ref') || jsonb_build_object('version',d.row_version,'sha256_hex',encode(d.sha256,'hex')))`
+// docJ strips internal columns and raw storage coordinates (storage_bucket, storage_key) so storage paths are never exposed to API callers.
+const docJ = `((to_jsonb(d) - 'org_id' - 'created_by' - 'updated_by' - 'row_version' - 'sha256' - 'encryption_key_ref' - 'storage_bucket' - 'storage_key') || jsonb_build_object('version',d.row_version,'sha256_hex',encode(d.sha256,'hex')))`
+
+// verifyMagicBytes validates that uploaded file bytes match the declared MIME type and blocks disguised HTML/scripts/executables.
+func verifyMagicBytes(declaredMIME string, data []byte) error {
+	mismatch := platform.Fail(422, "invalid_file_type", "Uploaded file content does not match declared content_type")
+	if len(data) == 0 {
+		return mismatch
+	}
+	detected := http.DetectContentType(data)
+	switch declaredMIME {
+	case "application/pdf":
+		if !bytes.HasPrefix(data, []byte("%PDF-")) {
+			return mismatch
+		}
+	case "image/jpeg":
+		if detected != "image/jpeg" {
+			return mismatch
+		}
+	case "image/png":
+		if detected != "image/png" {
+			return mismatch
+		}
+	case "image/webp":
+		if detected != "image/webp" {
+			return mismatch
+		}
+	case "application/dicom":
+		if len(data) < 132 || !bytes.Equal(data[128:132], []byte("DICM")) {
+			return mismatch
+		}
+	case "text/plain":
+		if !utf8.Valid(data) || bytes.IndexByte(data, 0) >= 0 || !strings.HasPrefix(detected, "text/plain") {
+			return mismatch
+		}
+		sample := strings.ToLower(string(data[:min(len(data), 1024)]))
+		for _, bad := range []string{"<script", "<html", "<!doctype", "<svg", "<iframe"} {
+			if strings.Contains(sample, bad) {
+				return mismatch
+			}
+		}
+	default:
+		return mismatch
+	}
+	return nil
+}
 
 type CreateInput struct {
 	EncounterID   *string `json:"encounter_id" validate:"omitempty,uuid"`
@@ -69,6 +117,9 @@ func (s Service) Register(ctx context.Context, a identity.Actor, patientID strin
 		b, e := base64.StdEncoding.DecodeString(in.ContentBase64)
 		if e != nil || len(b) == 0 {
 			return nil, platform.Fail(422, "validation", "content_base64 must be valid non-empty base64")
+		}
+		if e := verifyMagicBytes(in.ContentType, b); e != nil {
+			return nil, e
 		}
 		rawBytes = b
 		sizeBytes = int64(len(b))
@@ -170,7 +221,9 @@ func (s Service) Get(ctx context.Context, a identity.Actor, id, request string) 
 	}
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, _ platform.Session) (Raw, error) {
 		var patientID string
-		if e := tx.QueryRow(ctx, `SELECT patient_id::text FROM document.document WHERE id=$1::uuid`, id).Scan(&patientID); e != nil {
+		if e := tx.QueryRow(ctx, `SELECT d.patient_id::text FROM document.document d
+ JOIN patient.patient p ON p.id=d.patient_id
+ WHERE d.id=$1::uuid AND p.registered_facility_id=ANY($2::uuid[])`, id, a.FacilityIDs).Scan(&patientID); e != nil {
 			return nil, e
 		}
 		if e := platform.Audit(ctx, tx, "document.metadata.view", "phi_access", "success", "document", id, patientID, ""); e != nil {
@@ -188,12 +241,21 @@ func (s Service) UpdateStatus(ctx context.Context, a identity.Actor, id string, 
 		return nil, platform.Fail(422, "validation", "Provide status and/or legal_hold")
 	}
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, _ platform.Session) (Raw, error) {
+		var patientID string
+		if e := tx.QueryRow(ctx, `SELECT d.patient_id::text FROM document.document d
+ JOIN patient.patient p ON p.id=d.patient_id
+ WHERE d.id=$1::uuid AND p.registered_facility_id=ANY($2::uuid[]) FOR UPDATE OF d`, id, a.FacilityIDs).Scan(&patientID); e != nil {
+			return nil, e
+		}
 		tag, e := tx.Exec(ctx, `UPDATE document.document SET status=coalesce($3,status), legal_hold=coalesce($4,legal_hold)
  WHERE id=$1::uuid AND row_version=$2`, id, in.Version, in.Status, in.LegalHold)
 		if e != nil {
 			return nil, e
 		}
 		if e = platform.Changed(ctx, tx, tag, "document.document", id); e != nil {
+			return nil, e
+		}
+		if e = platform.Audit(ctx, tx, "document.status.update", "phi_access", "success", "document", id, patientID, ""); e != nil {
 			return nil, e
 		}
 		return platform.One(ctx, tx, `SELECT `+docJ+` FROM document.document d WHERE d.id=$1::uuid`, id)
@@ -211,7 +273,9 @@ func (s Service) Delete(ctx context.Context, a identity.Actor, id string, in Del
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, sess platform.Session) (Raw, error) {
 		var patientID string
 		var hold bool
-		if e := tx.QueryRow(ctx, `SELECT patient_id::text,legal_hold FROM document.document WHERE id=$1::uuid FOR UPDATE`, id).Scan(&patientID, &hold); e != nil {
+		if e := tx.QueryRow(ctx, `SELECT d.patient_id::text,d.legal_hold FROM document.document d
+ JOIN patient.patient p ON p.id=d.patient_id
+ WHERE d.id=$1::uuid AND p.registered_facility_id=ANY($2::uuid[]) FOR UPDATE OF d`, id, a.FacilityIDs).Scan(&patientID, &hold); e != nil {
 			return nil, e
 		}
 		if hold {
@@ -237,10 +301,11 @@ func (s Service) Download(ctx context.Context, a identity.Actor, id, request str
 		return nil, e
 	}
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, sess platform.Session) (map[string]any, error) {
-		var patientID, title, ct, bucket, skey, status, shaHex string
+		var patientID, title, ct, status, shaHex string
 		var size int64
-		e := tx.QueryRow(ctx, `SELECT patient_id::text,title,content_type,storage_bucket,storage_key,status,encode(sha256,'hex'),size_bytes
- FROM document.document WHERE id=$1::uuid`, id).Scan(&patientID, &title, &ct, &bucket, &skey, &status, &shaHex, &size)
+		e := tx.QueryRow(ctx, `SELECT d.patient_id::text,d.title,d.content_type,d.status,encode(d.sha256,'hex'),d.size_bytes
+ FROM document.document d JOIN patient.patient p ON p.id=d.patient_id
+ WHERE d.id=$1::uuid AND p.registered_facility_id=ANY($2::uuid[])`, id, a.FacilityIDs).Scan(&patientID, &title, &ct, &status, &shaHex, &size)
 		if e != nil {
 			return nil, e
 		}
@@ -251,14 +316,12 @@ func (s Service) Download(ctx context.Context, a identity.Actor, id, request str
 			return nil, e
 		}
 		out := map[string]any{
-			"id":             id,
-			"patient_id":     patientID,
-			"title":          title,
-			"content_type":   ct,
-			"size_bytes":     size,
-			"sha256_hex":     shaHex,
-			"storage_bucket": bucket,
-			"storage_key":    skey,
+			"id":           id,
+			"patient_id":   patientID,
+			"title":        title,
+			"content_type": ct,
+			"size_bytes":   size,
+			"sha256_hex":   shaHex,
 		}
 		if raw, err := os.ReadFile(s.blobPath(sess.OrgID, id)); err == nil {
 			if s.Keys != nil {

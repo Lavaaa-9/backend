@@ -161,7 +161,13 @@ func (api API) mountExt(staff fiber.Router) {
 		return cl.CancelFollowUp(c.Context(), a, id, b, rid(c))
 	}))
 	staff.Get("/departments", api.require(""), noBody(func(c fiber.Ctx, a identity.Actor, _ string) (any, error) {
-		return items(cl.Departments(c.Context(), a, rid(c)))
+		if e := optUUID(c, "facility_id"); e != nil {
+			return nil, e
+		}
+		if e := oneOf(c, "status", "active", "inactive"); e != nil {
+			return nil, e
+		}
+		return items(cl.Departments(c.Context(), a, c.Query("facility_id"), c.Query("status"), c.Query("q"), rid(c)))
 	}))
 	staff.Post("/queue", api.require("queue.manage"), withBody(201, func(c fiber.Ctx, a identity.Actor, _ string, b clinical.QueueInput) (any, error) {
 		return cl.JoinQueue(c.Context(), a, b, rid(c))

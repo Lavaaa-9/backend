@@ -164,6 +164,15 @@ func (api API) mountComplete(staff fiber.Router) {
 	staff.Post("/departments", api.require("admin.facility.manage"), withBody(201, func(c fiber.Ctx, a identity.Actor, _ string, b clinical.DepartmentInput) (any, error) {
 		return cl.CreateDepartment(c.Context(), a, b, rid(c))
 	}))
+	staff.Get("/departments/:id", api.require(""), noBody(func(c fiber.Ctx, a identity.Actor, id string) (any, error) {
+		return cl.GetDepartment(c.Context(), a, id, rid(c))
+	}))
+	staff.Put("/departments/:id", api.require("admin.facility.manage"), withBody(200, func(c fiber.Ctx, a identity.Actor, id string, b clinical.DepartmentUpdate) (any, error) {
+		return cl.UpdateDepartment(c.Context(), a, id, b, rid(c))
+	}))
+	staff.Post("/departments/:id/status", api.require("admin.facility.manage"), withBody(200, func(c fiber.Ctx, a identity.Actor, id string, b clinical.DepartmentStatusInput) (any, error) {
+		return cl.SetDepartmentStatus(c.Context(), a, id, b, rid(c))
+	}))
 	staff.Get("/service-points", api.require(""), noBody(func(c fiber.Ctx, a identity.Actor, _ string) (any, error) {
 		if e := optUUID(c, "department_id"); e != nil {
 			return nil, e
