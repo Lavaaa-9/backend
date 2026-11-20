@@ -1,4 +1,4 @@
-.PHONY: dev-db migrate seed api worker test db-test check openapi
+.PHONY: dev-db migrate seed api worker worker-once test db-test check openapi
 # Export .env explicitly in your shell; Make does not silently load secrets.
 dev-db:
 	./scripts/dev-db.sh
@@ -10,6 +10,8 @@ api:
 	go run .
 worker:
 	go run ./cmd/worker
+worker-once:
+	./scripts/dev-worker.sh once
 test:
 	go test -count=1 ./...
 db-test:

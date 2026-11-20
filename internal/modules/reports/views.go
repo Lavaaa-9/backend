@@ -25,6 +25,9 @@ func (s Service) DailyRevenue(ctx context.Context, a identity.Actor, from, to, r
 	if e := platform.Need(a.Permissions, "report.view"); e != nil {
 		return nil, e
 	}
+	if e := platform.Need(a.Permissions, "billing.read"); e != nil {
+		return nil, e
+	}
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, _ platform.Session) ([]Raw, error) {
 		return platform.Many(ctx, tx, `SELECT (to_jsonb(v) - 'org_id') FROM reporting.v_daily_revenue v
  WHERE ($1='' OR v.payment_date>=$1::date) AND ($2='' OR v.payment_date<=$2::date)
@@ -36,6 +39,9 @@ func (s Service) Receivables(ctx context.Context, a identity.Actor, request stri
 	if e := platform.Need(a.Permissions, "report.view"); e != nil {
 		return nil, e
 	}
+	if e := platform.Need(a.Permissions, "billing.read"); e != nil {
+		return nil, e
+	}
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, _ platform.Session) ([]Raw, error) {
 		return platform.Many(ctx, tx, `SELECT (to_jsonb(v) - 'org_id') FROM reporting.v_receivables v ORDER BY v.outstanding DESC LIMIT 200`)
 	})
@@ -43,6 +49,9 @@ func (s Service) Receivables(ctx context.Context, a identity.Actor, request stri
 
 func (s Service) BillingReconciliation(ctx context.Context, a identity.Actor, request string) ([]Raw, error) {
 	if e := platform.Need(a.Permissions, "report.view"); e != nil {
+		return nil, e
+	}
+	if e := platform.Need(a.Permissions, "billing.read"); e != nil {
 		return nil, e
 	}
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, _ platform.Session) ([]Raw, error) {
@@ -69,10 +78,10 @@ func (s Service) StockExpiry(ctx context.Context, a identity.Actor, request stri
 }
 
 func (s Service) DiagnosisCounts(ctx context.Context, a identity.Actor, request string) ([]Raw, error) {
-	if e := platform.Need(a.Permissions, "report.view"); e != nil {
+	if e := platform.Need(a.Permissions, "clinical.read"); e != nil {
 		return nil, e
 	}
-	if e := platform.Need(a.Permissions, "clinical.read"); e != nil {
+	if e := platform.Need(a.Permissions, "consultation.write", "report.view"); e != nil {
 		return nil, e
 	}
 	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, _ platform.Session) ([]Raw, error) {

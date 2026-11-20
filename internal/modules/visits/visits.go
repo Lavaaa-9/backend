@@ -19,21 +19,24 @@ type Service struct{ DB *pgxpool.Pool }
 // ---------------------------------------------------------------- encounters
 
 type EncounterInput struct {
-	PatientID      string `json:"patient_id" validate:"required,uuid"`
-	FacilityID     string `json:"facility_id" validate:"required,uuid"`
-	EncounterType  string `json:"encounter_type" validate:"required,oneof=outpatient emergency telemedicine follow_up"`
-	ChiefComplaint string `json:"chief_complaint" validate:"max=500"`
+	PatientID      string  `json:"patient_id" validate:"required,uuid"`
+	FacilityID     string  `json:"facility_id" validate:"required,uuid"`
+	AppointmentID  *string `json:"appointment_id" validate:"omitempty,uuid"`
+	EncounterType  string  `json:"encounter_type" validate:"required,oneof=outpatient emergency telemedicine follow_up"`
+	ChiefComplaint string  `json:"chief_complaint" validate:"max=500"`
 }
 type StatusInput struct {
-	Status  string `json:"status" validate:"required,oneof=in_progress completed cancelled entered_in_error"`
-	Reason  string `json:"reason" validate:"max=500"`
-	Version int    `json:"version" validate:"required,min=1"`
+	Status      string `json:"status" validate:"required,oneof=in_progress completed cancelled entered_in_error"`
+	Reason      string `json:"reason" validate:"max=500"`
+	AllowUnpaid bool   `json:"allow_unpaid"`
+	Version     int    `json:"version" validate:"required,min=1"`
 }
 type Encounter struct {
 	ID             string     `json:"id"`
 	EncounterNo    string     `json:"encounter_no"`
 	PatientID      string     `json:"patient_id"`
 	FacilityID     string     `json:"facility_id"`
+	AppointmentID  *string    `json:"appointment_id,omitempty"`
 	EncounterType  string     `json:"encounter_type"`
 	Status         string     `json:"status"`
 	ChiefComplaint string     `json:"chief_complaint"`
@@ -43,12 +46,12 @@ type Encounter struct {
 	Version        int        `json:"version"`
 }
 
-const encSel = `SELECT e.id::text,e.encounter_no,e.patient_id::text,e.facility_id::text,e.encounter_type,e.status,coalesce(e.chief_complaint,''),
+const encSel = `SELECT e.id::text,e.encounter_no,e.patient_id::text,e.facility_id::text,e.appointment_id::text,e.encounter_type,e.status,coalesce(e.chief_complaint,''),
  e.arrived_at,e.started_at,e.closed_at,e.row_version FROM clinical.encounter e`
 
 func scanEnc(r pgx.Row) (Encounter, error) {
 	var v Encounter
-	e := r.Scan(&v.ID, &v.EncounterNo, &v.PatientID, &v.FacilityID, &v.EncounterType, &v.Status, &v.ChiefComplaint, &v.ArrivedAt, &v.StartedAt, &v.ClosedAt, &v.Version)
+	e := r.Scan(&v.ID, &v.EncounterNo, &v.PatientID, &v.FacilityID, &v.AppointmentID, &v.EncounterType, &v.Status, &v.ChiefComplaint, &v.ArrivedAt, &v.StartedAt, &v.ClosedAt, &v.Version)
 	return v, e
 }
 
@@ -66,10 +69,26 @@ func (s Service) CreateEncounter(ctx context.Context, a identity.Actor, in Encou
 	}
 	defer tx.Rollback(ctx)
 	v, e := platform.Idempotent(ctx, tx, sess, "encounter.create", key, in, func() (Encounter, error) {
+		if in.AppointmentID != nil && *in.AppointmentID != "" {
+			var apptStatus string
+			e := tx.QueryRow(ctx, `SELECT status FROM clinical.appointment WHERE id=$1::uuid AND patient_id=$2::uuid AND facility_id=$3::uuid`,
+				*in.AppointmentID, in.PatientID, in.FacilityID).Scan(&apptStatus)
+			if e != nil {
+				return Encounter{}, platform.Fail(422, "invalid_appointment", "Appointment not found for this patient and facility")
+			}
+			if apptStatus != "booked" && apptStatus != "confirmed" && apptStatus != "checked_in" {
+				return Encounter{}, platform.Fail(409, "invalid_appointment_status", "Appointment cannot be linked to a new visit in status "+apptStatus)
+			}
+			if (apptStatus == "booked" || apptStatus == "confirmed") && a.Can("appointment.manage") {
+				if _, e = tx.Exec(ctx, `UPDATE clinical.appointment SET status='checked_in', checked_in_at=coalesce(checked_in_at,now()) WHERE id=$1::uuid`, *in.AppointmentID); e != nil {
+					return Encounter{}, e
+				}
+			}
+		}
 		var id string
-		e := tx.QueryRow(ctx, `INSERT INTO clinical.encounter(org_id,facility_id,patient_id,encounter_no,encounter_type,chief_complaint)
- VALUES($1::uuid,$2::uuid,$3::uuid,clinical.next_encounter_no($1::uuid),$4,NULLIF($5,'')) RETURNING id::text`,
-			sess.OrgID, in.FacilityID, in.PatientID, in.EncounterType, strings.TrimSpace(in.ChiefComplaint)).Scan(&id)
+		e := tx.QueryRow(ctx, `INSERT INTO clinical.encounter(org_id,facility_id,patient_id,appointment_id,encounter_no,encounter_type,chief_complaint)
+ VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,clinical.next_encounter_no($1::uuid),$5,NULLIF($6,'')) RETURNING id::text`,
+			sess.OrgID, in.FacilityID, in.PatientID, in.AppointmentID, in.EncounterType, strings.TrimSpace(in.ChiefComplaint)).Scan(&id)
 		if e != nil {
 			return Encounter{}, e
 		}
@@ -146,11 +165,31 @@ func (s Service) ChangeStatus(ctx context.Context, a identity.Actor, id string, 
 	if (in.Status == "cancelled" || in.Status == "entered_in_error") && reason == "" {
 		return Encounter{}, platform.Fail(422, "validation", "A reason is required")
 	}
+	if in.Status == "completed" && in.AllowUnpaid && len(reason) < 5 {
+		return Encounter{}, platform.Fail(422, "validation", "A reason (min 5 chars) is required when completing a visit with unpaid invoices")
+	}
 	tx, sess, e := platform.BeginRequest(ctx, s.DB, a.SessionID, request)
 	if e != nil {
 		return Encounter{}, e
 	}
 	defer tx.Rollback(ctx)
+	if in.Status == "completed" {
+		var draftConsults, draftTriages, draftRx, unpaidInvoices, pendingDiag int
+		if e = tx.QueryRow(ctx, `SELECT draft_consultations,draft_triages,draft_prescriptions,unpaid_invoices,pending_diagnostics FROM clinical.encounter_closure_blockers($1::uuid)`, id).
+			Scan(&draftConsults, &draftTriages, &draftRx, &unpaidInvoices, &pendingDiag); e != nil {
+			return Encounter{}, e
+		}
+		switch {
+		case draftConsults > 0:
+			return Encounter{}, platform.Fail(409, "open_draft_consultation", "Cannot complete visit while consultation notes are still in draft; sign or void them first")
+		case draftTriages > 0:
+			return Encounter{}, platform.Fail(409, "open_draft_triage", "Cannot complete visit while triage assessments are still in draft; finalise or void them first")
+		case draftRx > 0:
+			return Encounter{}, platform.Fail(409, "open_draft_prescription", "Cannot complete visit while prescriptions are still in draft; sign or cancel them first")
+		case unpaidInvoices > 0 && !in.AllowUnpaid:
+			return Encounter{}, platform.Fail(409, "unpaid_invoice", "Cannot complete visit with unsettled invoices; settle payment or supply allow_unpaid with a reason")
+		}
+	}
 	tag, e := tx.Exec(ctx, `UPDATE clinical.encounter SET status=$2,
  started_at=CASE WHEN $2='in_progress' THEN now() ELSE started_at END,
  closed_at=CASE WHEN $2 IN ('completed','cancelled','entered_in_error') THEN greatest(now(),arrived_at) END,
@@ -171,6 +210,11 @@ func (s Service) ChangeStatus(ctx context.Context, a identity.Actor, id string, 
 	v, e := scanEnc(tx.QueryRow(ctx, encSel+` WHERE e.id=$1::uuid`, id))
 	if e != nil {
 		return Encounter{}, e
+	}
+	if in.Status == "completed" && v.AppointmentID != nil && *v.AppointmentID != "" && a.Can("appointment.manage") {
+		if _, e = tx.Exec(ctx, `UPDATE clinical.appointment SET status='completed' WHERE id=$1::uuid AND status='checked_in'`, *v.AppointmentID); e != nil {
+			return Encounter{}, e
+		}
 	}
 	if e = platform.Audit(ctx, tx, "encounter.status."+in.Status, "phi_access", "success", "encounter", id, v.PatientID, reason); e != nil {
 		return Encounter{}, e

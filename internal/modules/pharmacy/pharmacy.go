@@ -4,6 +4,7 @@ package pharmacy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -12,6 +13,82 @@ import (
 	"spartial.local/backend/internal/modules/identity"
 	"spartial.local/backend/internal/platform"
 )
+
+type allergyConflict struct {
+	Drug      string
+	Substance string
+	Severity  string
+}
+
+func tokenizeClinical(s string) []string {
+	s = strings.ToLower(s)
+	repl := strings.NewReplacer("/", " ", "-", " ", ",", " ", "(", " ", ")", " ", "+", " ", ".", " ")
+	raw := strings.Fields(repl.Replace(s))
+	out := make([]string, 0, len(raw))
+	for _, w := range raw {
+		if len(w) >= 4 {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func drugMatchesAllergy(drugLabel, substance string) bool {
+	d := strings.ToLower(strings.TrimSpace(drugLabel))
+	sub := strings.ToLower(strings.TrimSpace(substance))
+	if d == "" || len(sub) < 3 {
+		return false
+	}
+	if strings.Contains(d, sub) || (len(d) >= 4 && strings.Contains(sub, d)) {
+		return true
+	}
+	dToks := tokenizeClinical(d)
+	sToks := tokenizeClinical(sub)
+	for _, dt := range dToks {
+		for _, st := range sToks {
+			if dt == st || strings.Contains(dt, st) || strings.Contains(st, dt) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func checkPatientDrugAllergies(ctx context.Context, tx pgx.Tx, patientID string, drugLabels []string, overrideReason string) (*allergyConflict, error) {
+	if len(drugLabels) == 0 {
+		return nil, nil
+	}
+	rows, e := tx.Query(ctx, `SELECT substance,severity FROM clinical.allergy WHERE patient_id=$1::uuid AND status='active' AND category='drug'`, patientID)
+	if e != nil {
+		return nil, e
+	}
+	type row struct{ sub, sev string }
+	var allergies []row
+	for rows.Next() {
+		var r row
+		if e = rows.Scan(&r.sub, &r.sev); e != nil {
+			rows.Close()
+			return nil, e
+		}
+		allergies = append(allergies, r)
+	}
+	rows.Close()
+	if e = rows.Err(); e != nil {
+		return nil, e
+	}
+	for _, d := range drugLabels {
+		for _, al := range allergies {
+			if drugMatchesAllergy(d, al.sub) {
+				match := &allergyConflict{Drug: d, Substance: al.sub, Severity: al.sev}
+				if len(strings.TrimSpace(overrideReason)) < 5 {
+					return match, platform.Fail(409, "allergy_conflict", fmt.Sprintf("Active drug allergy conflict: %s matches recorded allergy to %s (%s). Supply override_allergy_reason (min 5 chars) to override.", d, al.sub, al.sev))
+				}
+				return match, nil
+			}
+		}
+	}
+	return nil, nil
+}
 
 type Service struct{ DB *pgxpool.Pool }
 type Raw = platform.Raw
@@ -171,9 +248,10 @@ type ItemInput struct {
 	Instructions       string  `json:"instructions" validate:"max=500"`
 }
 type PrescriptionInput struct {
-	Notes string      `json:"notes" validate:"max=1000"`
-	Items []ItemInput `json:"items" validate:"required,min=1,max=30,dive"`
-	Sign  bool        `json:"sign"`
+	Notes                 string      `json:"notes" validate:"max=1000"`
+	Items                 []ItemInput `json:"items" validate:"required,min=1,max=30,dive"`
+	Sign                  bool        `json:"sign"`
+	OverrideAllergyReason string      `json:"override_allergy_reason" validate:"omitempty,max=500"`
 }
 type VersionInput struct {
 	Version int `json:"version" validate:"required,min=1"`
@@ -208,8 +286,29 @@ func (s Service) Prescribe(ctx context.Context, a identity.Actor, encounter stri
 			return nil, e
 		}
 		return platform.Idempotent(ctx, tx, sess, "rx.create:"+encounter, key, in, func() (Raw, error) {
+			var drugLabels []string
+			for _, it := range in.Items {
+				if it.DrugID != nil {
+					var gen, code string
+					var brand *string
+					if e := tx.QueryRow(ctx, `SELECT generic_name,brand_name,code FROM pharmacy.drug WHERE id=$1::uuid`, *it.DrugID).Scan(&gen, &brand, &code); e != nil {
+						return nil, e
+					}
+					label := gen + " " + code
+					if brand != nil && *brand != "" {
+						label += " " + *brand
+					}
+					drugLabels = append(drugLabels, label)
+				} else if it.DrugNameText != nil {
+					drugLabels = append(drugLabels, *it.DrugNameText)
+				}
+			}
+			overrideMatch, e := checkPatientDrugAllergies(ctx, tx, patient, drugLabels, in.OverrideAllergyReason)
+			if e != nil {
+				return nil, e
+			}
 			var id string
-			e := tx.QueryRow(ctx, `INSERT INTO pharmacy.prescription(org_id,encounter_id,patient_id,prescription_no,prescriber_membership_id,notes)
+			e = tx.QueryRow(ctx, `INSERT INTO pharmacy.prescription(org_id,encounter_id,patient_id,prescription_no,prescriber_membership_id,notes)
  VALUES($1::uuid,$2::uuid,$3::uuid,'RX-'||to_char(org.local_date($1::uuid),'YYYY')||'-'||lpad(org.next_value($1::uuid,'prescription',to_char(org.local_date($1::uuid),'YYYY'))::text,6,'0'),$4::uuid,NULLIF($5,'')) RETURNING id::text`,
 				sess.OrgID, encounter, patient, sess.MembershipID, strings.TrimSpace(in.Notes)).Scan(&id)
 			if e != nil {
@@ -223,6 +322,11 @@ func (s Service) Prescribe(ctx context.Context, a identity.Actor, encounter stri
 			}
 			if in.Sign {
 				if _, e = tx.Exec(ctx, `UPDATE pharmacy.prescription SET status='active' WHERE id=$1::uuid`, id); e != nil {
+					return nil, e
+				}
+			}
+			if overrideMatch != nil {
+				if e = platform.Audit(ctx, tx, "prescription.allergy_override", "phi_access", "success", "prescription", id, patient, strings.TrimSpace(in.OverrideAllergyReason)); e != nil {
 					return nil, e
 				}
 			}
@@ -312,9 +416,10 @@ type DispenseLine struct {
 	Quantity           float64 `json:"quantity" validate:"required,gt=0"`
 }
 type DispenseInput struct {
-	FacilityID       string         `json:"facility_id" validate:"required,uuid"`
-	CounsellingGiven bool           `json:"counselling_given"`
-	Lines            []DispenseLine `json:"lines" validate:"required,min=1,max=30,dive"`
+	FacilityID            string         `json:"facility_id" validate:"required,uuid"`
+	CounsellingGiven      bool           `json:"counselling_given"`
+	Lines                 []DispenseLine `json:"lines" validate:"required,min=1,max=30,dive"`
+	OverrideAllergyReason string         `json:"override_allergy_reason" validate:"omitempty,max=500"`
 }
 
 // Dispense issues drugs against a signed prescription. Without a batch_id the oldest-expiry
@@ -345,6 +450,23 @@ func (s Service) Dispense(ctx context.Context, a identity.Actor, rx string, in D
 		}
 		var patient string
 		if e = tx.QueryRow(ctx, `SELECT patient_id::text FROM pharmacy.prescription WHERE id=$1::uuid`, rx).Scan(&patient); e != nil {
+			return nil, e
+		}
+		// Safety check: verify none of the items being dispensed conflict with active drug allergies.
+		var dispLabels []string
+		for _, l := range in.Lines {
+			var label string
+			if e = tx.QueryRow(ctx, `SELECT coalesce(d.generic_name || ' ' || coalesce(d.brand_name,'') || ' ' || d.code, i.drug_name_text, '')
+ FROM pharmacy.prescription_item i LEFT JOIN pharmacy.drug d ON d.id=i.drug_id
+ WHERE i.id=$1::uuid AND i.prescription_id=$2::uuid`, l.PrescriptionItemID, rx).Scan(&label); e != nil {
+				return nil, e
+			}
+			if strings.TrimSpace(label) != "" {
+				dispLabels = append(dispLabels, label)
+			}
+		}
+		dispAllergyMatch, e := checkPatientDrugAllergies(ctx, tx, patient, dispLabels, in.OverrideAllergyReason)
+		if e != nil {
 			return nil, e
 		}
 		var did string
@@ -401,6 +523,11 @@ func (s Service) Dispense(ctx context.Context, a identity.Actor, rx string, in D
 				if _, e = tx.Exec(ctx, `INSERT INTO pharmacy.dispense_item(org_id,dispense_id,prescription_item_id,batch_id,quantity) VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,$5)`, sess.OrgID, did, l.PrescriptionItemID, b.id, b.qty); e != nil {
 					return nil, e
 				}
+			}
+		}
+		if dispAllergyMatch != nil {
+			if e = platform.Audit(ctx, tx, "pharmacy.dispense.allergy_override", "phi_access", "success", "dispense", did, patient, strings.TrimSpace(in.OverrideAllergyReason)); e != nil {
+				return nil, e
 			}
 		}
 		if e = platform.Audit(ctx, tx, "pharmacy.dispense", "phi_access", "success", "dispense", did, patient, ""); e != nil {

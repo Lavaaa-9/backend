@@ -365,6 +365,10 @@ func (s Service) EnterResults(ctx context.Context, a identity.Actor, item string
 		if _, e = tx.Exec(ctx, `UPDATE diag.request SET status='in_progress' WHERE id=$1::uuid AND status='requested'`, req); e != nil {
 			return nil, e
 		}
+		var encounterID, orderedBy string
+		if e = tx.QueryRow(ctx, `SELECT encounter_id::text,ordered_by_membership_id::text FROM diag.request WHERE id=$1::uuid`, req).Scan(&encounterID, &orderedBy); e != nil {
+			return nil, e
+		}
 		for _, v := range in.Results {
 			var vtype string
 			var allowed []string
@@ -377,14 +381,28 @@ func (s Service) EnterResults(ctx context.Context, a identity.Actor, item string
 			case vtype == "coded" && !slices.Contains(allowed, *v.ValueCoded):
 				return nil, platform.Fail(422, "validation", "value is not one of the allowed values")
 			}
-			if _, e = tx.Exec(ctx, `INSERT INTO diag.result(org_id,request_item_id,patient_id,component_id,value_numeric,value_text,value_coded,unit,ref_low,ref_high,abnormal_flag,is_critical)
+			var resID, flag string
+			var isCrit bool
+			if e = tx.QueryRow(ctx, `INSERT INTO diag.result(org_id,request_item_id,patient_id,component_id,value_numeric,value_text,value_coded,unit,ref_low,ref_high,abnormal_flag,is_critical)
  SELECT $1::uuid,$2::uuid,$3::uuid,c.id,$4::numeric,$5,$6,c.unit,rr.low,rr.high,
   CASE WHEN $4::numeric < rr.critical_low THEN 'LL' WHEN $4::numeric > rr.critical_high THEN 'HH' END,
   coalesce($4::numeric < rr.critical_low OR $4::numeric > rr.critical_high,false)
  FROM diag.test_component c LEFT JOIN LATERAL (SELECT * FROM diag.reference_range r WHERE r.component_id=c.id AND (r.sex IS NULL OR r.sex=$7)
-   AND $8::int BETWEEN r.age_min_days AND r.age_max_days ORDER BY (r.sex IS NULL) LIMIT 1) rr ON true WHERE c.id=$9::uuid`,
-				sess.OrgID, item, patient, v.ValueNumeric, v.ValueText, v.ValueCoded, sex, ageDays, v.ComponentID); e != nil {
+   AND $8::int BETWEEN r.age_min_days AND r.age_max_days ORDER BY (r.sex IS NULL) LIMIT 1) rr ON true WHERE c.id=$9::uuid
+ RETURNING id::text, is_critical, coalesce(abnormal_flag,'')`,
+				sess.OrgID, item, patient, v.ValueNumeric, v.ValueText, v.ValueCoded, sex, ageDays, v.ComponentID).Scan(&resID, &isCrit, &flag); e != nil {
 				return nil, e
+			}
+			if isCrit {
+				if _, e = tx.Exec(ctx, `INSERT INTO comms.outbox(org_id,event_type,aggregate_type,aggregate_id,dedupe_key,payload)
+ VALUES($1::uuid,'diagnostic.critical_result','diag_result',$2::uuid,'critical_result:'||$3::text,
+  jsonb_build_object('result_id',$3::text,'request_id',$4::text,'encounter_id',$5::text,'abnormal_flag',$6::text,'stage','preliminary','ordered_by_membership_id',$7::text))
+ ON CONFLICT DO NOTHING`, sess.OrgID, resID, resID, req, encounterID, flag, orderedBy); e != nil {
+					return nil, e
+				}
+				if e = platform.Audit(ctx, tx, "diagnostic.result.critical_alert", "phi_access", "success", "diag_result", resID, patient, "critical_"+flag); e != nil {
+					return nil, e
+				}
 			}
 		}
 		if e = platform.Audit(ctx, tx, "diagnostic.result.enter", "phi_access", "success", "diag_request", req, patient, ""); e != nil {
@@ -399,7 +417,7 @@ func (s Service) VerifyResult(ctx context.Context, a identity.Actor, id string, 
 	if e := platform.Need(a.Permissions, "diag.result.verify"); e != nil {
 		return nil, e
 	}
-	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, _ platform.Session) (Raw, error) {
+	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, sess platform.Session) (Raw, error) {
 		tag, e := tx.Exec(ctx, `UPDATE diag.result SET status='final' WHERE id=$1::uuid AND row_version=$2 AND status='preliminary'`, id, in.Version)
 		if e != nil {
 			return nil, e
@@ -407,8 +425,24 @@ func (s Service) VerifyResult(ctx context.Context, a identity.Actor, id string, 
 		if e = platform.Changed(ctx, tx, tag, "diag.result", id); e != nil {
 			return nil, e
 		}
-		var patient string
-		tx.QueryRow(ctx, `SELECT patient_id::text FROM diag.result WHERE id=$1::uuid`, id).Scan(&patient)
+		var patient, reqID, encID, orderedBy, flag string
+		var isCrit bool
+		if e = tx.QueryRow(ctx, `SELECT x.patient_id::text,r.id::text,r.encounter_id::text,r.ordered_by_membership_id::text,x.is_critical,coalesce(x.abnormal_flag,'')
+ FROM diag.result x JOIN diag.request_item i ON i.id=x.request_item_id JOIN diag.request r ON r.id=i.request_id WHERE x.id=$1::uuid`, id).
+			Scan(&patient, &reqID, &encID, &orderedBy, &isCrit, &flag); e != nil {
+			return nil, e
+		}
+		if isCrit {
+			if _, e = tx.Exec(ctx, `INSERT INTO comms.outbox(org_id,event_type,aggregate_type,aggregate_id,dedupe_key,payload)
+ VALUES($1::uuid,'diagnostic.critical_result_verified','diag_result',$2::uuid,'critical_result_verified:'||$3::text,
+  jsonb_build_object('result_id',$3::text,'request_id',$4::text,'encounter_id',$5::text,'abnormal_flag',$6::text,'stage','final','ordered_by_membership_id',$7::text))
+ ON CONFLICT DO NOTHING`, sess.OrgID, id, id, reqID, encID, flag, orderedBy); e != nil {
+				return nil, e
+			}
+			if e = platform.Audit(ctx, tx, "diagnostic.result.critical_verified", "phi_access", "success", "diag_result", id, patient, "critical_"+flag); e != nil {
+				return nil, e
+			}
+		}
 		if e = platform.Audit(ctx, tx, "diagnostic.result.verify", "phi_access", "success", "diag_result", id, patient, ""); e != nil {
 			return nil, e
 		}

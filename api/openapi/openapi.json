@@ -3,7 +3,7 @@
  "info": {
   "title": "Spartial Polyclinic Foundation API",
   "version": "1.0.0",
-  "description": "Full Spartial HMS API backed by the spartial_hms PostgreSQL schema (migrations 0001\u20130018). Every request runs in a transaction starting with sec.begin_request so row-level security and audit capture apply. Covers authentication and TOTP MFA, facilities/departments/service points, staff accounts, patients (identifiers, contacts, next of kin, consents, verifications, duplicate reviews and merge), clinical history (allergies, problems, history), appointments, telehealth, documents, encounters, queue, triage, nursing, consultations, diagnoses, procedures, follow-ups, laboratory/diagnostics, pharmacy, billing and insurance coverages, break-glass, privacy/governance, access reviews, dual-control approvals, management reports, communications and the audit trail. Timestamps are RFC3339 UTC."
+  "description": "Full Spartial HMS API backed by the spartial_hms PostgreSQL schema (migrations 0001\u20130019). Every request runs in a transaction starting with sec.begin_request so row-level security and audit capture apply. Covers authentication and TOTP MFA, facilities/departments/service points, staff accounts, patients (identifiers, contacts, next of kin, consents, verifications, duplicate reviews and merge), clinical history (allergies, problems, history), appointments, telehealth, documents, encounters, queue, triage, nursing, consultations, diagnoses, procedures, follow-ups, laboratory/diagnostics, pharmacy, billing and insurance coverages, break-glass, privacy/governance, access reviews, dual-control approvals, management reports, communications and the audit trail. Timestamps are RFC3339 UTC."
  },
  "servers": [
   {
@@ -3107,6 +3107,102 @@
    },
    "put": {
     "summary": "Update Appointment",
+    "description": "Requires permission: appointment.manage.",
+    "security": [
+     {
+      "bearerAuth": []
+     }
+    ],
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string",
+       "format": "uuid"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "additionalProperties": true
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Authentication required",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Permission denied",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Conflict or illegal state change",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     },
+     "422": {
+      "description": "Validation failed",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/Error"
+        }
+       }
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "additionalProperties": true
+       }
+      }
+     }
+    }
+   }
+  },
+  "/api/v1/staff/appointments/{id}/check-in": {
+   "post": {
+    "summary": "Check In Appointment",
     "description": "Requires permission: appointment.manage.",
     "security": [
      {
@@ -19569,7 +19665,7 @@
   "/api/v1/staff/reports/diagnosis-counts": {
    "get": {
     "summary": "Diagnosis Counts",
-    "description": "Requires permission: report.view.",
+    "description": "Requires permission: clinical.read.",
     "security": [
      {
       "bearerAuth": []

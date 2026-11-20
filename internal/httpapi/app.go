@@ -769,7 +769,7 @@ func New(cfg config.Config, db *pgxpool.Pool, log *slog.Logger) (*fiber.App, err
 	api.mountComplete(staff)
 	staff.Get("/audit/export", api.require("audit.read"), api.auditExport)
 	staff.Get("/audit", api.require("audit.read"), api.audit)
-	staff.Get("/metrics", api.require("report.view"), func(c fiber.Ctx) error {
+	staff.Get("/metrics", api.require("admin.org.manage"), func(c fiber.Ctx) error {
 		c.Set("Content-Type", "text/plain; version=0.0.4")
 		return c.SendString(metrics.Prometheus())
 	})
@@ -866,7 +866,7 @@ func (api API) require(permission string) fiber.Handler {
 func (api API) needsMFA(c fiber.Ctx, a identity.Actor) bool {
 	if api.Config.MFAEnforcePrivileged {
 		switch a.Role {
-		case "administrator", "compliance_officer", "billing_supervisor", "lab_supervisor":
+		case "administrator", "compliance_officer", "billing_supervisor", "lab_supervisor", "manager":
 			return true
 		}
 	}

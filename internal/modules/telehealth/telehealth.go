@@ -201,6 +201,79 @@ func (s Service) ChangeAppointmentStatus(ctx context.Context, a identity.Actor, 
 	})
 }
 
+type CheckInInput struct {
+	EncounterType  string `json:"encounter_type" validate:"omitempty,oneof=outpatient emergency telemedicine follow_up"`
+	ChiefComplaint string `json:"chief_complaint" validate:"max=500"`
+	Version        int    `json:"version" validate:"required,min=1"`
+}
+
+// CheckInAppointment atomically checks in a booked/confirmed appointment and creates & links its encounter.
+func (s Service) CheckInAppointment(ctx context.Context, a identity.Actor, id string, in CheckInInput, request string) (map[string]any, error) {
+	if e := platform.Need(a.Permissions, "appointment.manage"); e != nil {
+		return nil, e
+	}
+	if e := platform.Need(a.Permissions, "encounter.manage"); e != nil {
+		return nil, e
+	}
+	return platform.Run(ctx, s.DB, a.SessionID, request, func(tx pgx.Tx, sess platform.Session) (map[string]any, error) {
+		var patientID, facilityID, apptType, status string
+		var apptReason *string
+		var rowVer int
+		e := tx.QueryRow(ctx, `SELECT patient_id::text,facility_id::text,appointment_type,status,reason,row_version
+ FROM clinical.appointment WHERE id=$1::uuid AND facility_id=ANY($2::uuid[]) FOR UPDATE`, id, a.FacilityIDs).
+			Scan(&patientID, &facilityID, &apptType, &status, &apptReason, &rowVer)
+		if e != nil {
+			return nil, e
+		}
+		if rowVer != in.Version {
+			return nil, platform.Conflict()
+		}
+		if status != "booked" && status != "confirmed" && status != "checked_in" {
+			return nil, platform.Fail(409, "conflict", "Appointment cannot be checked in from status "+status)
+		}
+		if status != "checked_in" {
+			if _, e = tx.Exec(ctx, `UPDATE clinical.appointment SET status='checked_in', checked_in_at=coalesce(checked_in_at,now()) WHERE id=$1::uuid`, id); e != nil {
+				return nil, e
+			}
+		}
+		var encID string
+		e = tx.QueryRow(ctx, `SELECT id::text FROM clinical.encounter WHERE appointment_id=$1::uuid`, id).Scan(&encID)
+		if errors.Is(e, pgx.ErrNoRows) {
+			encType := in.EncounterType
+			if encType == "" {
+				if apptType == "telemedicine" {
+					encType = "telemedicine"
+				} else {
+					encType = "outpatient"
+				}
+			}
+			cc := strings.TrimSpace(in.ChiefComplaint)
+			if cc == "" && apptReason != nil {
+				cc = *apptReason
+			}
+			if e = tx.QueryRow(ctx, `INSERT INTO clinical.encounter(org_id,facility_id,patient_id,appointment_id,encounter_no,encounter_type,chief_complaint)
+ VALUES($1::uuid,$2::uuid,$3::uuid,$4::uuid,clinical.next_encounter_no($1::uuid),$5,NULLIF($6,'')) RETURNING id::text`,
+				sess.OrgID, facilityID, patientID, id, encType, cc).Scan(&encID); e != nil {
+				return nil, e
+			}
+		} else if e != nil {
+			return nil, e
+		}
+		if e = platform.Audit(ctx, tx, "appointment.check_in", "phi_access", "success", "appointment", id, patientID, encID); e != nil {
+			return nil, e
+		}
+		apptJSON, e := platform.One(ctx, tx, `SELECT `+apptJ+` FROM clinical.appointment a WHERE a.id=$1::uuid`, id)
+		if e != nil {
+			return nil, e
+		}
+		encJSON, e := platform.One(ctx, tx, `SELECT `+platform.JSON("e", true)+` FROM clinical.encounter e WHERE e.id=$1::uuid`, encID)
+		if e != nil {
+			return nil, e
+		}
+		return map[string]any{"appointment": apptJSON, "encounter": encJSON}, nil
+	})
+}
+
 // ---------------------------------------------------------------- telehealth sessions
 
 type SessionInput struct {

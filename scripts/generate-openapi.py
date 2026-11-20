@@ -10,7 +10,7 @@ P = pathlib.Path(__file__).resolve().parent.parent / "api/openapi/openapi.json"
 d = json.loads(P.read_text())
 S = d["components"]["schemas"]
 d["info"]["version"] = "1.0.0"
-d["info"]["description"] = ("Full Spartial HMS API backed by the spartial_hms PostgreSQL schema (migrations 0001–0018). "
+d["info"]["description"] = ("Full Spartial HMS API backed by the spartial_hms PostgreSQL schema (migrations 0001–0019). "
     "Every request runs in a transaction starting with sec.begin_request so row-level security and audit capture apply. "
     "Covers authentication and TOTP MFA, facilities/departments/service points, staff accounts, patients (identifiers, contacts, "
     "next of kin, consents, verifications, duplicate reviews and merge), clinical history (allergies, problems, history), "

@@ -209,6 +209,9 @@ func (api API) mountComplete(staff fiber.Router) {
 	staff.Post("/appointments/:id/status", api.require("appointment.manage"), withBody(200, func(c fiber.Ctx, a identity.Actor, id string, b telehealth.AppointmentStatusInput) (any, error) {
 		return th.ChangeAppointmentStatus(c.Context(), a, id, b, rid(c))
 	}))
+	staff.Post("/appointments/:id/check-in", api.require("appointment.manage"), withBody(200, func(c fiber.Ctx, a identity.Actor, id string, b telehealth.CheckInInput) (any, error) {
+		return th.CheckInAppointment(c.Context(), a, id, b, rid(c))
+	}))
 	staff.Post("/telehealth/sessions", api.require(""), withBody(201, func(c fiber.Ctx, a identity.Actor, _ string, b telehealth.SessionInput) (any, error) {
 		return th.CreateSession(c.Context(), a, b, rid(c))
 	}))
@@ -408,7 +411,7 @@ func (api API) mountComplete(staff fiber.Router) {
 	staff.Get("/reports/stock-expiry", api.require("report.view"), noBody(func(c fiber.Ctx, a identity.Actor, _ string) (any, error) {
 		return items(rp.StockExpiry(c.Context(), a, rid(c)))
 	}))
-	staff.Get("/reports/diagnosis-counts", api.require("report.view"), noBody(func(c fiber.Ctx, a identity.Actor, _ string) (any, error) {
+	staff.Get("/reports/diagnosis-counts", api.require("clinical.read"), noBody(func(c fiber.Ctx, a identity.Actor, _ string) (any, error) {
 		return items(rp.DiagnosisCounts(c.Context(), a, rid(c)))
 	}))
 	staff.Get("/reports/break-glass-pending", api.require("audit.read"), noBody(func(c fiber.Ctx, a identity.Actor, _ string) (any, error) {

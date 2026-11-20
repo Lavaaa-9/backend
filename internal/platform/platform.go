@@ -79,7 +79,7 @@ func Open(ctx context.Context, url string) (*pgxpool.Pool, error) {
 }
 
 // LatestMigration is the newest spartial-db migration this API was written against.
-const LatestMigration = "0018_compliance_document_read"
+const LatestMigration = "0019_workflow_guards"
 
 func CheckSchema(ctx context.Context, db *pgxpool.Pool) error {
 	var ok bool
